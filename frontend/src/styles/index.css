@@ -1,0 +1,71 @@
+@import url("https://cdn.jsdelivr.net/gh/sunn-us/SUIT/fonts/variable/woff2/SUIT-Variable.css");
+@import "tailwindcss";
+@import "./theme.css";
+
+@theme inline {
+  --color-background-root: var(--bg-root);
+  --color-background-strong: var(--bg-root-strong);
+  --color-background-fill: var(--bg-fill-regular);
+  --color-background-fill-strong: var(--bg-fill-strong);
+  --color-background-fill-inverted: var(--bg-fill-inverted);
+  --color-background-interactive: var(--bg-fill-interactive);
+  --color-content: var(--content-base);
+  --color-content-additive: var(--content-additive);
+  --color-content-assistive: var(--content-assistive);
+  --color-content-disabled: var(--content-disabled);
+  --color-content-inverted: var(--content-inverted);
+  --color-content-elevated: var(--content-elevated);
+  --color-border-divider: var(--border-divider);
+  --color-border-divider-strong: var(--border-divider-strong);
+  --color-border-outline: var(--border-outline);
+  --color-border-outline-strong: var(--border-outline-strong);
+  --color-brand: var(--brand);
+  --color-brand-regular: var(--brand-regular);
+  --color-success: var(--success);
+  --color-success-regular: var(--success-regular);
+  --color-warning: var(--warning);
+  --color-warning-regular: var(--warning-regular);
+  --color-danger: var(--danger);
+  --color-danger-regular: var(--danger-regular);
+  --font-suit: "SUIT Variable", sans-serif;
+  --font-inter: "Inter Variable", sans-serif;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 1000px;
+  --text-title: 24px;
+  --text-title--line-height: 34px;
+  --text-headline: 20px;
+  --text-headline--line-height: 28px;
+  --text-subhead: 18px;
+  --text-subhead--line-height: 26px;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-callout: 14px;
+  --text-callout--line-height: 20px;
+  --text-footnote: 12px;
+  --text-footnote--line-height: 18px;
+  --text-caption: 10px;
+  --text-caption--line-height: 14px;
+}
+
+@layer base {
+  * { box-sizing: border-box; }
+  html { background: var(--bg-root-strong); color: var(--content-base); }
+  body { margin: 0; min-width: 320px; min-height: 100vh; font-family: "SUIT Variable", sans-serif; }
+  button, input, textarea, select { font: inherit; }
+  button { cursor: pointer; }
+  ::selection { color: var(--content-elevated); background: var(--brand); }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+}
+
+@keyframes fade-up { from { opacity: 0; transform: translateY(5px); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes loading-slide { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
+.animate-fade-up { animation: fade-up .22s ease; }
+.animate-spin-fast { animation: spin .8s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

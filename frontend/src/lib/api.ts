@@ -1,0 +1,28 @@
+import type { AskResponse } from "../types/agent";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+
+export async function askAgent(message: string, threadId?: string | null, signal?: AbortSignal): Promise<AskResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/v1/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message, thread_id: threadId || null }),
+    signal,
+  });
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error("서버 응답을 읽지 못했습니다.");
+  }
+
+  if (!response.ok) {
+    const detail = typeof payload === "object" && payload && "detail" in payload
+      ? String((payload as { detail: unknown }).detail)
+      : "요청을 처리하지 못했습니다.";
+    throw new Error(detail);
+  }
+
+  return payload as AskResponse;
+}
