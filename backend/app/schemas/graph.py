@@ -123,6 +123,7 @@ class EligibilityRef(BaseModel):
 
 
 class Product(BaseModel):
+    updated_at: str | None = None
     institution_name: str = Field(min_length=1, max_length=50)
     name: str = Field(min_length=1, max_length=100)
     category: ProductCategory

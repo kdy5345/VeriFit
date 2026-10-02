@@ -1,0 +1,14 @@
+{
+  "description": "수작업으로 고정한 입력 해석 정답. 상품은 테스트용 가상 상품이며 실제 금융상품 추천 데이터가 아닙니다.",
+  "cases": [
+    {"id":"salary-yes", "message":"월 30만 원씩 1년. 급여이체는 가능해요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"salary_transfer","satisfied":true,"evidence_quote":"급여이체는 가능"}]}},
+    {"id":"salary-no", "message":"월 30만 원씩 1년. 급여이체는 못해요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"salary_transfer","satisfied":false,"evidence_quote":"급여이체는 못해요"}]}},
+    {"id":"card-missing-detail", "message":"월 30만 원씩 1년. 카드는 사용해요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"card_usage_amount","satisfied":true,"evidence_quote":"카드는 사용해요"}]}},
+    {"id":"card-below-threshold", "message":"월 30만 원씩 1년. 카드 실적은 월 10만 원이에요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"card_usage_amount","satisfied":true,"amount_won":100000,"evidence_quote":"카드 실적은 월 10만 원"}]}},
+    {"id":"card-threshold", "message":"월 30만 원씩 1년. 카드 실적은 월 30만 원이에요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"card_usage_amount","satisfied":true,"amount_won":300000,"evidence_quote":"카드 실적은 월 30만 원"}]}},
+    {"id":"explicit-unknown", "message":"월 30만 원씩 1년. 급여이체 가능 여부는 모르겠어요.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"salary_transfer","satisfied":null,"evidence_quote":"급여이체 가능 여부는 모르겠어요"}]}},
+    {"id":"age", "message":"월 30만 원씩 1년. 만 35세입니다.", "expected":{"monthly_deposit_won":300000,"monthly_deposit_quote":"30만 원","term_months":12,"term_quote":"1년","facts":[{"code":"age_range","satisfied":true,"age":35,"evidence_quote":"만 35세"}]}},
+    {"id":"missing-amount", "message":"1년 넣고 싶어요.", "expected":{"monthly_deposit_won":null,"term_months":12,"term_quote":"1년","facts":[]}},
+    {"id":"updated-amount", "message":"사용자 1: 월 30만 원씩 1년.\n사용자 2: 월 50만 원으로 바꿔줘.", "expected":{"monthly_deposit_won":500000,"monthly_deposit_quote":"50만 원","term_months":12,"term_quote":"1년","facts":[]}}
+  ]
+}

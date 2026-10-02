@@ -30,7 +30,8 @@ def load_products(conn: sqlite3.Connection) -> list[Product]:
 
     for prow in conn.execute(
         "SELECT p.*, i.name AS institution_name FROM products p "
-        "JOIN institutions i ON i.id = p.institution_id"
+        "JOIN institutions i ON i.id = p.institution_id "
+        "WHERE p.active=1 AND p.disclosed_month=(SELECT MAX(p2.disclosed_month) FROM products p2 WHERE p2.institution_id=p.institution_id AND p2.name=p.name)"
     ):
         eligibility = [
             EligibilityRef(
@@ -101,6 +102,7 @@ def load_products(conn: sqlite3.Connection) -> list[Product]:
                 category=ProductCategory(prow["category"]),
                 disclosed_month=prow["disclosed_month"],
                 source_hash=prow["source_hash"],
+                updated_at=prow["updated_at"],
                 join_way=prow["join_way"],
                 max_limit_won=prow["max_limit_won"],
                 eligibility=eligibility,

@@ -1,4 +1,4 @@
-import { CheckCircle2, X, XCircle } from "lucide-react";
+import { CheckCircle2, CircleHelp, X, XCircle } from "lucide-react";
 import type { BonusResult, ProductResult } from "../types/agent";
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
 }
 
 function EvidenceRow({ bonus }: { bonus: BonusResult }) {
-  const Icon = bonus.satisfied ? CheckCircle2 : XCircle;
+  const Icon = bonus.satisfied ? CheckCircle2 : bonus.status === "unknown" ? CircleHelp : XCircle;
   return (
     <article className="rounded-lg border border-border-divider bg-background-root p-4">
       <div className="flex items-start gap-3">
@@ -26,7 +26,7 @@ function EvidenceRow({ bonus }: { bonus: BonusResult }) {
             “{bonus.evidence_quote}”
           </blockquote>
           <p className="mb-0 mt-3 text-footnote text-content-assistive">
-            {bonus.satisfied ? "입력한 조건과 일치해 예상금리에 반영됐어요." : "현재 입력한 조건에서는 예상금리에 반영되지 않았어요."}
+            {bonus.satisfied ? "입력한 조건과 일치하는 우대예요. 실제 합산에는 우대 한도가 적용됩니다." : bonus.exclusion_reason ? `조건은 충족했지만 ${bonus.exclusion_reason} 때문에 제외됐어요.` : bonus.status === "unknown" ? "판정에 필요한 정보가 부족해 미확인 상태예요. 현재 금리에는 포함하지 않았어요." : "입력한 정보가 기준에 미달해 미충족으로 판정했어요."}
           </p>
         </div>
       </div>
@@ -55,6 +55,7 @@ export function EvidenceDrawer({ product, onClose }: Props) {
           </button>
         </div>
         <div className="space-y-6 p-6">
+          <p className="text-footnote leading-5 text-content-assistive">공시월: {product.disclosed_month || "미확인"} · 검증 저장 시각: {product.updated_at ? new Date(product.updated_at).toLocaleString("ko-KR") : "미확인"}<br />원문 버전: {product.source_hash?.slice(0, 12) || "미확인"}</p>
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-lg bg-brand-regular p-4">
               <p className="m-0 text-footnote text-content-assistive">예상 적용금리</p>

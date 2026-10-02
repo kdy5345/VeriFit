@@ -75,7 +75,7 @@ Analyzer가 사용자의 말을 `UserProfile`로 변환합니다.
 
 - 기본금리·예상 적용금리·공시 최고금리
 - 일반과세 기준 예상 세후 이자와 만기 예상액
-- 반영된 우대조건과 미반영 우대조건
+- 충족·미충족·미확인 우대조건과 조건부 상한
 - 가입 자격 확인 여부
 - 계산에 사용된 공시 원문
 
@@ -159,6 +159,28 @@ Institution
 - 동시에 받을 수 없는 우대조건 처리
 - 우대금리 합산 한도 적용
 - 기본금리와 공시 최고금리 범위 확인
+- 가입 나이·공시 납입 한도 확인, 가입 불가 후보 제외
+- 정보가 없는 자격은 확인 필요로 남기고 공시 근거 제시
+
+### 추가 질문과 가정 비교
+
+미확인 우대는 현재 적용금리에 포함하지 않습니다. 금액·실적 기간·횟수·나이 등
+빠진 정보를 다음 질문으로 요청하며, 이미 불가능하다고 답한 조건은 다시 묻지 않습니다.
+질문 영향도는 조건을 충족하는 가정으로 **우대 한도·중복 제한·세금까지 재계산한
+한 상품의 최대 추가 세후 이자**입니다. 가입 자격 확인은 이자 증가보다 먼저 질문합니다.
+복합 조건은 답변 하나만으로 이자가 늘지 않을 수 있음을 명시합니다.
+
+결과 화면에서는 월 납입액·기간·급여이체 가정을 바꿔 기존 결과와 비교할 수 있습니다.
+동일 상품의 세후 이자 차이와 순위 변화를 보여주며, 원래 사용자 프로필은 변경하지 않습니다.
+기간이 다르면 총 납입원금도 달라지므로 수익률의 직접 비교로 해석하면 안 됩니다.
+
+### 상품 갱신과 출처 버전
+
+배치는 공시월, 가입 자격, 우대 원문, 가입 채널, 납입 한도, 단리/복리와 기간별
+금리를 해시로 비교합니다. 내용이 그대로인 검증 상품만 건너뛰고 변경되면 재검증합니다.
+`product_versions`에 저장한 검증 버전과 현재 공시의 해시·저장 시각을 함께 보관합니다.
+같은 상품의 여러 공시월 중 최신만 조회하며, 변경 원문이 검증되지 않으면 이전 금리를
+추천에서 비활성화합니다. 상품 저장 도중 실패하면 변경 전체를 롤백합니다.
 
 ### 결정론적 이자 계산
 
@@ -247,6 +269,9 @@ LLM을 호출하지 않고 Knowledge Graph 조회와 코드 계산만 수행합�
 - 적용·미적용 우대조건 표시
 - 공시 원문 Evidence drawer
 - `thread_id` 기반 후속 대화
+- 세후 이자 영향도 기반 추가 질문과 가정 비교 표
+- 공시월·원문 버전·검증 저장 시각 표시
+- 새로고침·서버 재시작 후 대화 복원
 - 라이트·다크 테마
 - 데스크톱 2열 및 모바일 1열 반응형 레이아웃
 
@@ -255,12 +280,12 @@ LLM을 호출하지 않고 Knowledge Graph 조회와 코드 계산만 수행합�
 | 영역 | 기술 |
 |---|---|
 | Backend | Python 3.11, FastAPI, Pydantic |
-| Agent workflow | LangGraph, MemorySaver checkpointer |
+| Agent workflow | LangGraph, SQLiteSaver checkpointer |
 | LLM | Gemini Extractor / Analyzer / Writer / Reviewer |
 | Database | SQLite |
 | Data source | 금융감독원 금융상품 한눈에 API |
 | Frontend | React, TypeScript, Vite, Tailwind CSS |
-| Validation | Pytest, Pydantic JSON Schema, 결정론적 계산 검증 |
+| Validation | Pytest, Vitest, 입력 해석 정답 세트, 결정론적 계산 검증 |
 
 ## 프로젝트 구조
 
@@ -307,6 +332,8 @@ GEMINI_API_KEY=발급받은_키
 EXTRACTOR_MODEL=gemini-3.7-flash
 REVIEWER_MODEL=gemini-3.7-flash
 ONLINE_AGENT_MODEL=gemini-3.7-flash
+# 선택: 기본값은 data/conversations.sqlite
+CHECKPOINT_PATH=/절대경로/savings_agent/data/conversations.sqlite
 ```
 
 ### 2. 상품 데이터 구축
@@ -319,6 +346,9 @@ cd backend
 
 # 전체 실행
 .venv/bin/python scripts/run_savings_batch.py --db-path ../data/savings.db
+
+# 실행 중 하루 간격으로 갱신 (중지: Ctrl+C)
+.venv/bin/python scripts/run_savings_batch.py --db-path ../data/savings.db --interval-seconds 86400
 ```
 
 ### 3. API 서버 실행
@@ -391,19 +421,58 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 API 서버의 실행 상태를 확인합니다.
 
+### `GET /api/v1/ask/{thread_id}`
+
+SQLite 체크포인트의 마지막 응답을 복원합니다. 없는 대화는 404를 반환합니다.
+브라우저는 현재 탭의 `sessionStorage`에 대화 ID만 보관합니다. 새 비교는 이 연결을
+끊고 별도 대화로 시작합니다. 저장된 응답은 당시 공시의 스냅샷이며 후속 요청 시
+최신 KG로 재계산합니다.
+
+### `POST /api/v1/scenarios`
+
+`baseline: UserProfile`과 `scenarios: [{name, profile}]`을 전달합니다. 최대 5개 가정을
+LLM 없이 동일 계산 엔진으로 평가하고 상품별 세후 이자 증감과 순위를 반환합니다.
+가입 불가 상품은 `excluded_results`로 분리됩니다. `unknown` 자격 후보는 확인 필요입니다.
+
 ## 테스트와 빌드
 
 ```bash
 # 백엔드
 cd backend
 .venv/bin/python -m pytest -q
+.venv/bin/python scripts/run_online_regression.py
+
+# 실제 모델/프롬프트 회귀 평가: Gemini 호출 비용 발생
+.venv/bin/python scripts/run_online_regression.py --live
+
+# 기존 상품 DB 복사본으로 실제 Agent 2턴 검증 (Gemini 호출 비용 발생)
+.venv/bin/python scripts/validate_live_workflow.py
 
 # 프론트엔드
 cd frontend
+npm test
 npm run build
+npm run lint
 ```
 
 검증 규칙과 설계 의도는 각 서비스 모듈의 docstring에도 기록되어 있습니다.
+
+자동 테스트는 원문 숫자 검증, 삼상 판정, 우대 한도·중복 제한, 가입 자격,
+가정 비교, 저장 롤백, 최신 공시 조회, 실제 SQLite 재시작 복원 및 화면 사용자 흐름을
+포함합니다. `online_gold.json`은 수작업 정답 9건이며 `--live`를 주지 않은 실행은
+정답의 계약 검증이지 모델 성능 평가가 아닙니다. 실제 호출 보고서에는 모델과
+프롬프트 소스 해시가 기록됩니다.
+
+## 운영 범위
+
+- 현재는 인증 없는 로컬·단일 프로세스 서비스입니다. 공개 배포에는 사용자별 접근 제어와
+  다중 워커용 체크포인트/잠금 설계가 별도로 필요합니다. 대화 ID를 타인에게 공유하지 마세요.
+- `other` 가입 자격과 원문에 없는 세부 기준은 자동 확정하지 않습니다. 상품별 약관과
+  실제 적용금리는 금융회사 확인이 필요합니다. 사용자 fact는 해당 금융회사 기준의 정보여야 합니다.
+- 가정 상한은 미확인 우대의 조합 상한이지 실제 수익 약속이 아닙니다. 미확인 규칙 사이의
+  상충 가능성까지 완전히 입증하는 금융상품 가입 판정기가 아닙니다.
+- 갱신은 배치 실행 주기에 따릅니다. API에서 사라진 상품의 판매 종료를 자동 확정하지는
+  않습니다. 일부 상품만 검증된 경우 그 옵션만 제공합니다.
 
 - `backend/app/services/extractor.py`
 - `backend/app/services/verification.py`

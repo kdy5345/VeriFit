@@ -1,6 +1,7 @@
 """온라인 Agent 노드. LLM은 해석·설명, 코드는 금융 판정과 검증을 담당한다."""
 
 import re
+from decimal import Decimal
 
 from app.agent.state import OnlineAgentState
 from app.core.config import settings
@@ -10,7 +11,9 @@ from app.schemas.agent import (
     BonusEvidenceResult,
 )
 from app.services.interest import calculate_savings_interest
-from app.services.matching import find_matches
+from app.services.matching import find_matches, bonus_status
+from app.schemas.user import ConditionStatus
+from app.services.evaluation import evaluate_products, product_key, result_for_match
 from app.services.online_agent_llm import GeminiOnlineAgent, OnlineAgentLlmError
 
 
@@ -57,7 +60,7 @@ def _money_from_quote(quote: str) -> int | None:
     if not match:
         return None
     multiplier = {"만원": 10_000, "천원": 1_000, "원": 1}[match.group(2)]
-    return int(float(match.group(1)) * multiplier)
+    return int(Decimal(match.group(1)) * multiplier)
 
 
 def _months_from_quote(quote: str) -> int | None:
@@ -106,6 +109,15 @@ def validate_input(state: OnlineAgentState) -> dict:
         seen_codes.add(fact.code)
         if not _quote_is_grounded(conversation, fact.evidence_quote):
             errors.append(f"사용자 조건 {fact.code.value}의 원문 근거를 확인할 수 없습니다.")
+        # 세부 실적을 임의로 채워 우대를 받게 만들지 않도록 수치도 대조한다.
+        if fact.amount_won is not None and _money_from_quote(fact.evidence_quote) != fact.amount_won:
+            errors.append(f"{fact.code.value}의 실적 금액이 원문과 다릅니다.")
+        if fact.months is not None and _months_from_quote(fact.evidence_quote) != fact.months:
+            errors.append(f"{fact.code.value}의 실적 기간이 원문과 다릅니다.")
+        if fact.count is not None and not re.search(rf"(?<!\d){fact.count}\s*(회|건)", fact.evidence_quote):
+            errors.append(f"{fact.code.value}의 실적 횟수가 원문과 다릅니다.")
+        if fact.age is not None and not re.search(rf"(?<!\d){fact.age}\s*(세|살)", fact.evidence_quote):
+            errors.append("나이의 원문 근거를 확인할 수 없습니다.")
 
     if errors or questions:
         return {"profile": None, "questions": questions, "errors": errors}
@@ -123,9 +135,11 @@ def route_after_validation(state: OnlineAgentState) -> str:
 
 def calculate_products(state: OnlineAgentState) -> dict:
     profile = state["profile"]
-    matches = find_matches(state["products"], profile)
+    evaluation = evaluate_products(state["products"], profile)
+    matches = [pm for pm in find_matches(state["products"], profile) if pm.eligibility_status != ConditionStatus.UNSATISFIED]
+    matches.sort(key=lambda pm: (-result_for_match(pm, profile).after_tax_interest_won, product_key(pm)))
     results: list[AgentProductResult] = []
-    for index, pm in enumerate(matches[:10]):
+    for pm in matches[:10]:
         interest = calculate_savings_interest(
             profile.monthly_deposit_won,
             pm.rate_option.term_months,
@@ -142,13 +156,13 @@ def calculate_products(state: OnlineAgentState) -> dict:
                     rate_bps=bonus.rate_bps,
                     satisfied=bonus.id in satisfied_ids,
                     evidence_quote=bonus.evidence.quote,
+                    status=bonus_status(bonus, profile),
+                    exclusion_reason="중복 불가 조건" if bonus.id in pm.match.dropped_by_exclusivity else None,
                 )
                 for bonus in pm.rate_option.bonus_group.bonuses
             ]
-        key = (
-            f"{pm.product.institution_name}|{pm.product.name}|"
-            f"{pm.rate_option.reserve_type.value}|{pm.rate_option.term_months}|{index}"
-        )
+        key = product_key(pm)
+        calculated = result_for_match(pm, profile)
         results.append(
             AgentProductResult(
                 product_key=key,
@@ -163,9 +177,16 @@ def calculate_products(state: OnlineAgentState) -> dict:
                 maturity_amount_won=interest.maturity_amount_won,
                 eligibility_warning=pm.eligibility_warning,
                 bonuses=bonuses,
+                eligibility_status=calculated.eligibility_status,
+                eligibility_reasons=calculated.eligibility_reasons,
+                potential_rate_bps=calculated.potential_rate_bps,
+                potential_after_tax_interest_won=calculated.potential_after_tax_interest_won,
+                disclosed_month=calculated.disclosed_month,
+                updated_at=calculated.updated_at,
+                source_hash=calculated.source_hash,
             )
         )
-    return {"product_results": results}
+    return {"product_results": results, "next_question": evaluation.next_question, "excluded_products": evaluation.excluded_results}
 
 
 def write_answer(state: OnlineAgentState) -> dict:
@@ -213,6 +234,8 @@ def verify_answer(state: OnlineAgentState) -> dict:
         errors.append("답변에 검증 가능한 상품 주장이 없습니다.")
     elif state["product_results"][0].product_key not in seen:
         errors.append("계산상 최상위 상품이 답변에서 누락됐습니다.")
+    if any(p.eligibility_warning for p in state["product_results"] if p.product_key in seen) and "확인" not in draft.answer:
+        errors.append("가입 자격이 미확인인 상품에 확인 필요 안내가 없습니다.")
     return {"errors": errors}
 
 
@@ -273,6 +296,8 @@ def _template_answer(products: list[AgentProductResult]) -> str:
             f"예상 적용금리 {product.achieved_rate_bps / 100:.2f}%, "
             f"예상 세후 이자 {product.after_tax_interest_won:,}원"
         )
+        if product.eligibility_warning:
+            lines.append("   가입 자격은 금융회사에서 확인해야 합니다.")
     return "\n".join(lines)
 
 
@@ -283,6 +308,8 @@ def finalize(state: OnlineAgentState) -> dict:
         answer=state["draft"].answer,
         extracted_profile=state["profile"],
         products=state["product_results"],
+        next_question=state.get("next_question"),
+        excluded_products=state.get("excluded_products", []),
         retry_count=state.get("retry_count", 0),
     )
     return {"response": response}
@@ -290,12 +317,15 @@ def finalize(state: OnlineAgentState) -> dict:
 
 def fallback(state: OnlineAgentState) -> dict:
     products = state.get("product_results", [])
+    excluded = state.get("excluded_products", [])
     response = AskResponse(
         thread_id=state["thread_id"],
-        status="completed" if products else "failed",
-        answer=_template_answer(products),
+        status="completed" if products or excluded else "failed",
+        answer=_template_answer(products) if products or not excluded else "조회된 상품이 가입 자격 또는 납입 한도에 맞지 않아 추천에서 제외되었습니다. 조건을 확인하거나 변경해 주세요.",
         extracted_profile=state.get("profile"),
         products=products,
+        next_question=state.get("next_question"),
+        excluded_products=state.get("excluded_products", []),
         used_fallback=True,
         retry_count=state.get("retry_count", 0),
         verification_errors=state.get("errors", []),

@@ -26,6 +26,11 @@ T = TypeVar("T", bound=BaseModel)
 # 형태만 넣는다. 새로운 실패 사례가 확인되기 전에는 예시를 무작정 늘리지 않는다.
 _ANALYZER_EXAMPLES: list[tuple[dict[str, Any], dict[str, Any]]] = [
     (
+        {"message": "월 30만 원씩 1년. 카드는 사용해요."},
+        {"monthly_deposit_won": 300000, "monthly_deposit_quote": "30만 원", "term_months": 12, "term_quote": "1년",
+         "facts": [{"code": "card_usage_amount", "satisfied": True, "amount_won": None, "evidence_quote": "카드는 사용해요"}], "preferences": []},
+    ),
+    (
         {"message": "매달 30만 원씩 1년 넣고, 급여이체는 가능하지만 카드는 안 써."},
         {
             "monthly_deposit_won": 300000,
@@ -320,7 +325,8 @@ class GeminiOnlineAgent:
 
     def analyze(self, message: str) -> AnalyzedUserInput:
         definitions = "\n".join(
-            f"- {code.value}: {description}" for code, description in REQUIREMENT_DEFINITIONS.items()
+            f"- {code.value}: {('사용자의 카드 사용 여부와 결제 금액. 카드 사용 여부만 말한 경우에도 이 코드로 보존하고 금액은 null로 둔다. 상품의 우대 충족 여부는 별도 계산 엔진이 판정한다.' if code.value == 'card_usage_amount' else description)}"
+            for code, description in REQUIREMENT_DEFINITIONS.items()
         )
         system = f"""# 역할
 당신은 적금 상품 비교를 원하는 사용자의 자유로운 한국어를 검증 가능한 구조로 바꾸는
@@ -354,8 +360,10 @@ Analyzer입니다. 상품을 추천하거나 금리를 계산하지 않고, 사�
 # fact와 근거
 - evidence_quote는 해당 조건과 긍정/부정을 함께 확인할 수 있는 원문의 정확한 연속
   부분 문자열이어야 합니다.
-- amount_won, months, count, channel은 사용자가 해당 조건의 기준으로 직접 말했을 때만
+- amount_won, months, count, channel, age는 사용자가 해당 조건의 기준으로 직접 말했을 때만
   넣습니다. 상품의 월 납입액이나 전체 가입 기간을 fact 파라미터에 복사하지 않습니다.
+- 모르겠다거나 확인하지 않은 조건은 satisfied=null로 표현합니다. 미확인을 false로 만들지 않습니다.
+- 나이는 age_range 사실의 age로 보존하고, 생년월일이나 직업으로 임의 추정하지 않습니다.
 - '급여나 연금 중 하나는 옮길 수 있다'처럼 어느 쪽인지 확정되지 않으면 둘을 모두
   satisfied=true로 만들지 말고 other로 보수적으로 분류합니다.
 
@@ -405,6 +413,9 @@ Answer Writer입니다. 당신은 계산기나 상품 검색기가 아니며 sup
 - 우대조건의 근거를 사용할 때는 같은 상품 bonuses에 있는 evidence_quote를 한 글자도 바꾸지
   않고 evidence_quotes에 넣습니다. 다른 상품의 근거를 섞지 않습니다.
 - satisfied=true인 우대만 '반영됐다'고 말합니다. false인 우대는 받을 수 있다고 말하지 않습니다.
+- status=unknown인 우대는 '미확인'으로 설명합니다. 미충족이나 확정 수익과 혼동하지 않습니다.
+- potential_rate_bps와 potential_after_tax_interest_won은 추가 조건이 충족되는 경우의 가정 상한이며,
+  현재 적용금리와 이자가 아닙니다. 중복 제한과 우대 한도 때문에 각 우대 금리를 단순 합산하지 않습니다.
 
 # 설명 원칙
 - 사용자의 명시적 preferences가 있으면 금리 차이와 조건 부담을 함께 설명할 수 있습니다.

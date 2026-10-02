@@ -10,6 +10,7 @@ from app.schemas.agent import (
 )
 from app.schemas.graph import Product
 from app.schemas.user import UserProfile
+from app.schemas.evaluation import NextQuestion, ProductResult
 
 
 class OnlineAgentState(TypedDict, total=False):
@@ -23,6 +24,8 @@ class OnlineAgentState(TypedDict, total=False):
     analysis: AnalyzedUserInput | None
     profile: UserProfile | None
     product_results: list[AgentProductResult]
+    next_question: NextQuestion | None
+    excluded_products: list[ProductResult]
     draft: DraftAnswer | None
     review: AnswerReview | None
 

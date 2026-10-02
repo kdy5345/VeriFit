@@ -1,8 +1,7 @@
 """검증을 통과한 Product를 SQLite에 저장한다.
 
-재추출로 내용이 바뀔 수 있으므로, 같은 (institution, name, disclosed_month) 상품은
-저장 전에 통째로 지우고 다시 넣는다 (부분 UPDATE보다 훨씬 단순하고, 이 규모에서는
-성능 문제가 없다).
+같은 공시의 재검증 결과는 원자적으로 교체하고 검증 버전은 별도 보관한다.
+실패한 교체는 롤백하며, 변경 원문을 해석할 수 없으면 이전 상품을 비활성화한다.
 """
 
 import json
@@ -15,9 +14,16 @@ from app.schemas.graph import Product
 
 
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    if str(db_path) != ":memory:":
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA_SQL)
+    conn.execute("BEGIN IMMEDIATE")  # 동시에 연결되어도 스키마 마이그레이션은 한 번씩 실행한다.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
+    if "active" not in columns:
+        conn.execute("ALTER TABLE products ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+    conn.commit()
     return conn
 
 
@@ -32,6 +38,21 @@ def _upsert_institution(conn: sqlite3.Connection, name: str) -> int:
 
 
 def save_product(conn: sqlite3.Connection, product: Product) -> int:
+    """실패하면 이전 상품을 보존하고 성공한 버전만 원자적으로 공개한다."""
+    conn.execute("SAVEPOINT save_product")
+    try:
+        product_id = _save_product(conn, product)
+        conn.execute("INSERT OR IGNORE INTO product_versions (institution_name, product_name, disclosed_month, source_hash, payload_json, created_at) VALUES (?,?,?,?,?,?)",
+                     (product.institution_name, product.name, product.disclosed_month, product.source_hash, product.model_dump_json(), _now()))
+        conn.execute("RELEASE SAVEPOINT save_product")
+        return product_id
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT save_product")
+        conn.execute("RELEASE SAVEPOINT save_product")
+        raise
+
+
+def _save_product(conn: sqlite3.Connection, product: Product) -> int:
     institution_id = _upsert_institution(conn, product.institution_name)
 
     existing = conn.execute(
@@ -119,8 +140,13 @@ def save_product(conn: sqlite3.Connection, product: Product) -> int:
                 (rate_option_id, pair_a, pair_b),
             )
 
-    conn.commit()
     return product_id
+
+
+def deactivate_product(conn: sqlite3.Connection, institution: str, name: str) -> None:
+    """새 원문이 검증되지 않았을 때 오래된 금리가 추천에 남지 않게 한다."""
+    with conn:
+        conn.execute("UPDATE products SET active=0 WHERE name=? AND institution_id=(SELECT id FROM institutions WHERE name=?)", (name, institution))
 
 
 def log_extraction_result(

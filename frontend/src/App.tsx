@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEven
 import { ArrowRight, Check, ChevronDown, CircleHelp, MessageCircle, Moon, Plus, ShieldCheck, Sparkles, Sun, Wallet } from "lucide-react";
 import { EvidenceDrawer } from "./components/EvidenceDrawer";
 import { ProductCard } from "./components/ProductCard";
+import { ScenarioComparison } from "./components/ScenarioComparison";
 import { Badge } from "./components/ui/Badge";
 import { Button } from "./components/ui/Button";
 import { Card } from "./components/ui/Card";
 import { SegmentedControl } from "./components/ui/SegmentedControl";
 import { Textarea } from "./components/ui/Field";
 import { setTheme, type ThemeName } from "./design-system";
-import { askAgent } from "./lib/api";
+import { askAgent, restoreConversation } from "./lib/api";
 import type { AskResponse, ProductResult } from "./types/agent";
 
 type Screen = "start" | "loading" | "question" | "results" | "error";
@@ -67,7 +68,7 @@ function FactChips({ result }: { result: AskResponse }) {
     { key: "term", label: `${profile.term_months}개월`, satisfied: true },
     ...Object.entries(profile.facts).map(([key, fact]) => ({ key, label: factNames[key] ?? key, satisfied: fact.satisfied })),
   ];
-  return <div className="flex flex-wrap gap-2">{chips.map((chip) => <span key={chip.key} className={`inline-flex min-h-8 items-center gap-1.5 rounded-full px-3 py-1 text-footnote font-bold ${chip.satisfied ? "bg-brand-regular text-brand" : "bg-background-fill text-content-assistive"}`}>{chip.satisfied ? <Check size={13} /> : <span aria-hidden="true">−</span>}{chip.label}{!chip.satisfied && " 안 함"}</span>)}</div>;
+  return <div className="flex flex-wrap gap-2">{chips.map((chip) => <span key={chip.key} className={`inline-flex min-h-8 items-center gap-1.5 rounded-full px-3 py-1 text-footnote font-bold ${chip.satisfied ? "bg-brand-regular text-brand" : "bg-background-fill text-content-assistive"}`}>{chip.satisfied ? <Check size={13} /> : <span aria-hidden="true">−</span>}{chip.label}{chip.satisfied === null ? " 미확인" : chip.satisfied === false ? " 안 함" : ""}</span>)}</div>;
 }
 
 export default function App() {
@@ -81,6 +82,23 @@ export default function App() {
   const [evidenceProduct, setEvidenceProduct] = useState<ProductResult | null>(null);
   const [showAll, setShowAll] = useState(false);
   const requestRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const saved = sessionStorage.getItem("verifit.thread");
+    if (!saved) return;
+    const controller = new AbortController();
+    requestRef.current = controller;
+    setScreen("loading");
+    restoreConversation(saved, controller.signal).then((response) => {
+      if (controller.signal.aborted) return;
+      setResult(response); setThreadId(response.thread_id);
+      setScreen(response.status === "needs_input" ? "question" : response.status === "failed" ? "error" : "results");
+    }).catch((caught) => {
+      if (controller.signal.aborted) return;
+      setError(caught instanceof Error ? `대화 복원 실패: ${caught.message}` : "대화를 복원하지 못했습니다.");
+      setScreen("error");
+    });
+    return () => controller.abort();
+  }, []);
   useEffect(() => () => requestRef.current?.abort(), []);
   useEffect(() => {
     if (!evidenceProduct) return;
@@ -103,6 +121,7 @@ export default function App() {
       if (controller.signal.aborted) return;
       setResult(response);
       setThreadId(response.thread_id);
+      sessionStorage.setItem("verifit.thread", response.thread_id);
       setInput("");
       setSort("rate");
       setShowAll(false);
@@ -116,6 +135,7 @@ export default function App() {
     }
   }
   function reset() {
+    sessionStorage.removeItem("verifit.thread");
     requestRef.current?.abort();
     requestRef.current = null;
     setScreen("start"); setInput(""); setThreadId(null); setResult(null); setError(""); setSort("rate"); setShowAll(false); setEvidenceProduct(null);
@@ -144,10 +164,13 @@ export default function App() {
         <div className="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
           <section className="min-w-0"><div className="mb-5 flex flex-wrap items-end justify-between gap-4"><div><p className="m-0 text-footnote font-bold text-brand">내 조건으로 계산한 결과</p><h2 className="mb-0 mt-1 text-title">상품 비교 <span className="text-content-assistive">{sortedProducts.length}</span></h2></div>{sortedProducts.length > 1 && <SegmentedControl value={sort} onChange={(value) => { setSort(value); setShowAll(false); }} options={[{ label: "예상금리순", value: "rate" }, { label: "세후이자순", value: "interest" }]} />}</div>
             {visibleProducts.length > 0 ? <div className="space-y-4">{visibleProducts.map((product, index) => <ProductCard key={product.product_key} product={product} rank={index + 1} onOpenEvidence={setEvidenceProduct} />)}{sortedProducts.length > 5 && <button type="button" onClick={() => setShowAll(!showAll)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border border-border-divider bg-background-root text-callout font-bold text-content-additive hover:border-brand/30 hover:text-brand">{showAll ? "상품 접기" : `나머지 ${sortedProducts.length - 5}개 상품 보기`} <ChevronDown size={16} className={showAll ? "rotate-180" : ""} /></button>}</div> : <Card className="p-8 text-center"><Wallet size={24} className="mx-auto text-content-assistive" /><p className="mb-0 mt-4 text-body font-bold">조건에 맞는 상품을 찾지 못했어요</p><p className="mb-0 mt-2 text-callout text-content-assistive">기간이나 조건을 바꿔 다시 계산해 보세요.</p></Card>}
+            {result.extracted_profile && <ScenarioComparison key={JSON.stringify(result.extracted_profile)} profile={result.extracted_profile} />}
+            {(result.excluded_products ?? []).length > 0 && <Card className="mt-4"><h3 className="m-0 text-body">조건에 맞지 않아 제외한 상품</h3>{result.excluded_products.map((p) => <p key={p.product_key} className="text-callout text-content-assistive">{p.institution_name} {p.product_name}: {p.eligibility_reasons.join(" · ")}</p>)}</Card>}
           </section>
           <aside className="space-y-4 lg:sticky lg:top-24 lg:self-start"><Card><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-lg bg-brand-regular text-brand"><Check size={18} /></span><div><h3 className="m-0 text-body">인식한 조건</h3><p className="m-0 text-footnote text-content-assistive">이번 계산에 사용했어요</p></div></div><div className="mt-5"><FactChips result={result} /></div></Card>
             <Card><div className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-lg bg-success-regular text-success"><ShieldCheck size={17} /></span><div><h3 className="m-0 text-body">숫자와 근거 대조</h3><p className="m-0 text-footnote text-content-assistive">결과 생성 후 확인했어요</p></div></div><p className="mb-0 mt-4 text-callout leading-6 text-content-additive">금리와 이자는 코드로 계산하고, 상품별 우대조건은 공시 원문과 연결했어요.</p></Card>
-            <Card className="border-brand/25"><div className="flex items-center gap-2 text-footnote font-bold text-brand"><MessageCircle size={16} /> 조건을 바꿔 다시 물어보세요</div><p className="mb-4 mt-2 text-callout leading-6 text-content-additive">기간이나 납입액만 바꿔 말해도 이전 대화에 이어 계산합니다.</p><Composer value={input} onChange={setInput} onSubmit={submit} compact placeholder="예: 월 50만 원으로 바꿔줘" /></Card>
+            {result.next_question && <Card><h3 className="m-0 text-body">이 조건을 확인해 볼까요?</h3><p className="text-callout leading-6">{result.next_question.question}</p>{result.next_question.interest_gain_won > 0 && <p className="text-callout font-bold text-brand">한 상품 기준 최대 +{money.format(result.next_question.interest_gain_won)}원 (세후·가정)</p>}<p className="text-footnote leading-5 text-content-assistive">{result.next_question.explanation}</p><p className="text-footnote text-content-assistive">아래 입력창에 조건명과 가능 여부, 금액·기간 등 세부 정보를 함께 답해 주세요.</p></Card>}
+            <Card className="border-brand/25"><div className="flex items-center gap-2 text-footnote font-bold text-brand"><MessageCircle size={16} /> 조건을 바꿔 다시 물어보세요</div><p className="mb-4 mt-2 text-callout leading-6 text-content-additive">기간이나 납입액만 바꿔 말해도 이전 대화에 이어 계산합니다.</p><Composer value={input} onChange={setInput} onSubmit={submit} compact placeholder="예: 카드 사용은 월 30만 원, 6개월 가능해요" /></Card>
           </aside>
         </div>
         <footer className="mt-10 flex items-start gap-2 border-t border-border-divider pt-5 text-footnote leading-5 text-content-assistive"><ShieldCheck size={14} className="mt-0.5 shrink-0" /><span>{result.disclaimer}</span></footer>

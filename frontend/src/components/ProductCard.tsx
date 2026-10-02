@@ -64,6 +64,8 @@ export function ProductCard({ product, rank, onOpenEvidence }: Props) {
           </div>
         </div>
 
+        {product.potential_rate_bps > product.achieved_rate_bps && <p className="mb-0 mt-3 text-footnote leading-5 text-content-assistive">미확인 우대를 충족하는 경우의 조건부 상한 {(product.potential_rate_bps / 100).toFixed(2)}% · 예상 세후 이자 {won.format(product.potential_after_tax_interest_won)}원. 아직 확정된 금리가 아니에요.</p>}
+        {product.eligibility_reasons?.length > 0 && <p className="mb-0 mt-3 text-footnote leading-5 text-content-assistive">가입 전 확인: {product.eligibility_reasons.join(" · ")}</p>}
         <div className="mt-5 grid gap-3 sm:grid-cols-2">
           <div>
             <p className="mb-2 mt-0 text-footnote font-bold text-content-assistive">반영된 우대</p>
@@ -84,6 +86,7 @@ export function ProductCard({ product, rank, onOpenEvidence }: Props) {
                 <div key={bonus.bonus_id} className="flex items-center gap-2 text-callout text-content-assistive">
                   <Minus size={14} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate">{bonus.label}</span>
+                  <small className="shrink-0">{bonus.exclusion_reason ?? (bonus.status === "unknown" ? "미확인" : "미충족")}</small>
                   <span className="shrink-0">+{(bonus.rate_bps / 100).toFixed(2)}%p</span>
                 </div>
               )) : <span className="text-callout text-content-assistive">추가 조건 없음</span>}
@@ -93,7 +96,7 @@ export function ProductCard({ product, rank, onOpenEvidence }: Props) {
       </div>
 
       <footer className="flex items-center justify-between border-t border-border-divider bg-background-strong/60 px-5 py-3 sm:px-6">
-        <span className="text-footnote text-content-assistive">{product.term_months}개월 기준</span>
+        <span className="text-footnote text-content-assistive">{product.term_months}개월 · 공시 {product.disclosed_month || "확인 필요"}</span>
         <Button variant="secondary" size="sm" onClick={() => onOpenEvidence(product)} icon={<ArrowUpRight size={14} />}>
           <FileSearch size={14} /> 계산 근거
         </Button>

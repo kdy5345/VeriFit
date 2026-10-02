@@ -1,5 +1,12 @@
-from langgraph.checkpoint.memory import MemorySaver
+import atexit
+import sqlite3
+from enum import Enum
+from pydantic import BaseModel
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
+from app.core.config import settings
+from app.schemas import agent, graph, user, evaluation, requirements
 
 from app.agent.nodes import (
     analyze_input,
@@ -59,5 +66,17 @@ def build_online_agent_graph(checkpointer=None):
     return builder.compile(checkpointer=checkpointer)
 
 
-online_agent_checkpointer = MemorySaver()
+def sqlite_checkpointer(path):
+    """pickle 없이 프로젝트의 명시적 스키마만 역직렬화한다."""
+    allowed = [cls for module in (agent, graph, user, evaluation, requirements)
+               for cls in vars(module).values()
+               if isinstance(cls, type) and issubclass(cls, (BaseModel, Enum)) and cls.__module__.startswith("app.schemas.")]
+    conn = sqlite3.connect(str(path), check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return SqliteSaver(conn, serde=JsonPlusSerializer(allowed_msgpack_modules=allowed, allowed_json_modules=[(c.__module__, c.__name__) for c in allowed]))
+
+
+settings.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+online_agent_checkpointer = sqlite_checkpointer(settings.checkpoint_path)
+atexit.register(online_agent_checkpointer.conn.close)
 online_agent_graph = build_online_agent_graph(checkpointer=online_agent_checkpointer)

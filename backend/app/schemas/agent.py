@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field
 
 from app.schemas.requirements import RequirementCode
 from app.schemas.user import UserFact, UserProfile
+from app.schemas.user import ConditionStatus
+from app.schemas.evaluation import NextQuestion, ProductResult
 
 
 class AskRequest(BaseModel):
@@ -20,11 +22,12 @@ class AskRequest(BaseModel):
 
 class AnalyzedFact(BaseModel):
     code: RequirementCode
-    satisfied: bool
+    satisfied: bool | None
     amount_won: int | None = Field(default=None, ge=0)
     months: int | None = Field(default=None, ge=0)
     count: int | None = Field(default=None, ge=0)
     channel: str | None = None
+    age: int | None = Field(default=None, ge=0, le=120)
     evidence_quote: str = Field(min_length=1, max_length=300)
 
     def to_user_fact(self) -> UserFact:
@@ -34,6 +37,7 @@ class AnalyzedFact(BaseModel):
             months=self.months,
             count=self.count,
             channel=self.channel,
+            age=self.age,
         )
 
 
@@ -61,6 +65,8 @@ class BonusEvidenceResult(BaseModel):
     rate_bps: int
     satisfied: bool
     evidence_quote: str
+    status: ConditionStatus = ConditionStatus.UNKNOWN
+    exclusion_reason: str | None = None
 
 
 class AgentProductResult(BaseModel):
@@ -76,6 +82,13 @@ class AgentProductResult(BaseModel):
     maturity_amount_won: int
     eligibility_warning: bool = False
     bonuses: list[BonusEvidenceResult] = Field(default_factory=list)
+    eligibility_status: ConditionStatus = ConditionStatus.SATISFIED
+    eligibility_reasons: list[str] = Field(default_factory=list)
+    potential_rate_bps: int = 0
+    potential_after_tax_interest_won: int = 0
+    disclosed_month: str = ""
+    updated_at: str | None = None
+    source_hash: str = ""
 
 
 class DraftProductClaim(BaseModel):
@@ -102,6 +115,8 @@ class AskResponse(BaseModel):
     extracted_profile: UserProfile | None = None
     products: list[AgentProductResult] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
+    next_question: NextQuestion | None = None
+    excluded_products: list[ProductResult] = Field(default_factory=list)
     used_fallback: bool = False
     retry_count: int = 0
     verification_errors: list[str] = Field(default_factory=list)

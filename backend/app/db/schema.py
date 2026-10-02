@@ -11,6 +11,16 @@ extraction_log는 KG에 안 들어가는 것(제외된 term, 사유, 재시도 �
 """
 
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS product_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    institution_name TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    disclosed_month TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(institution_name, product_name, disclosed_month, source_hash)
+);
 CREATE TABLE IF NOT EXISTS institutions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT UNIQUE NOT NULL
@@ -26,6 +36,7 @@ CREATE TABLE IF NOT EXISTS products (
     join_way TEXT,
     max_limit_won INTEGER,
     updated_at TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
     UNIQUE(institution_id, name, disclosed_month)
 );
 

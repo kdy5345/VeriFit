@@ -16,6 +16,7 @@ class Settings(BaseSettings):
 
     finlife_api_key: SecretStr | None = None
     db_path: Path = PROJECT_ROOT / "data" / "savings.db"
+    checkpoint_path: Path = PROJECT_ROOT / "data" / "conversations.sqlite"
 
     extractor_model: str = "gemini-3.7-flash"
     reviewer_model: str = "gemini-3.7-flash"
