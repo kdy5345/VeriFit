@@ -134,6 +134,19 @@ def route_after_validation(state: OnlineAgentState) -> str:
 
 
 def calculate_products(state: OnlineAgentState) -> dict:
+    from app.core.cache import cached
+    from app.core.config import settings
+    from app.schemas.cache import CalculatedTurn
+
+    result = cached("agent_calculation", {
+        "products": [p.model_dump(mode="json") for p in state["products"]],
+        "profile": state["profile"].model_dump(mode="json"),
+    }, CalculatedTurn, lambda: CalculatedTurn(**_calculate_products(state)), settings.cache_calculation_ttl)
+    return {"product_results": result.product_results, "next_question": result.next_question,
+            "excluded_products": result.excluded_products}
+
+
+def _calculate_products(state: OnlineAgentState) -> dict:
     profile = state["profile"]
     evaluation = evaluate_products(state["products"], profile)
     matches = [pm for pm in find_matches(state["products"], profile) if pm.eligibility_status != ConditionStatus.UNSATISFIED]

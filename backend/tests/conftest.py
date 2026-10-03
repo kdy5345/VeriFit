@@ -6,3 +6,5 @@ from pathlib import Path
 _test_data = tempfile.TemporaryDirectory(prefix="verifit-tests-")
 os.environ["CHECKPOINT_PATH"] = str(Path(_test_data.name) / "conversations.sqlite")
 os.environ["DB_PATH"] = str(Path(_test_data.name) / "products.db")
+os.environ["CACHE_ENABLED"] = "false"
+os.environ.pop("REDIS_URL", None)

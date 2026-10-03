@@ -18,6 +18,8 @@ from pydantic import ValidationError
 
 from app.schemas.extraction import LlmExtraction
 from app.schemas.review import ReviewResult
+from app.core.cache import cached, fingerprint
+from app.core.config import settings
 
 
 class ReviewError(RuntimeError):
@@ -244,6 +246,15 @@ class GeminiReviewer:
         rate_options: list[dict[str, int]],
         candidate: LlmExtraction,
     ) -> ReviewResult:
+        return cached("extraction_review", {
+            "model": self._model, "account": fingerprint(self._api_key),
+            "system": _SYSTEM_INSTRUCTION,
+            "contents": self._build_contents(product_name, join_member, spcl_cnd, rate_options, candidate),
+            "schema": ReviewResult.model_json_schema(),
+        }, ReviewResult, lambda: self._uncached_review(product_name, join_member, spcl_cnd,
+            rate_options, candidate), settings.cache_llm_ttl, cacheable=lambda value: not value.findings)
+
+    def _uncached_review(self, product_name, join_member, spcl_cnd, rate_options, candidate):
         payload = {
             "systemInstruction": {"parts": [{"text": _SYSTEM_INSTRUCTION}]},
             "contents": self._build_contents(

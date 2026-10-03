@@ -23,6 +23,8 @@ from pydantic import ValidationError
 
 from app.schemas.extraction import LlmExtraction
 from app.schemas.requirements import REQUIREMENT_DEFINITIONS, RequirementCode
+from app.core.cache import cached, fingerprint
+from app.core.config import settings
 
 
 class ExtractionError(RuntimeError):
@@ -434,6 +436,16 @@ class GeminiExtractor:
         feedback이 있으면(=이전 시도가 검증에 실패해 재시도하는 경우) n번 모두에
         같은 피드백을 실어 보낸다.
         """
+        # Cache the independent sample set, NOT each call: agreement still uses n samples.
+        return cached("extraction_samples", {
+            "model": self._model, "account": fingerprint(self._api_key), "n": n,
+            "temperature": temperature, "system": _build_system_instruction(),
+            "contents": self._build_contents(product_name, join_member, spcl_cnd, rate_options, feedback),
+            "schema": LlmExtraction.model_json_schema(),
+        }, list[LlmExtraction], lambda: self._extract_samples(n, product_name, join_member,
+            spcl_cnd, rate_options, feedback, temperature), settings.cache_llm_ttl)
+
+    def _extract_samples(self, n, product_name, join_member, spcl_cnd, rate_options, feedback, temperature):
         return [
             self.extract(
                 product_name, join_member, spcl_cnd, rate_options,

@@ -245,11 +245,17 @@ SQLite Knowledge Graph 저장
 ```text
 React Web UI
         ↓
-POST /api/v1/ask
+Nginx → FastAPI (POST /api/v1/ask)
         ↓
-Online LangGraph Agent
+최종 결과 캐시 조회 (Redis)
         ↓
-SQLite Knowledge Graph 조회
+캐시 미스: Online LangGraph Agent
+  ├─ 사용자 입력 분석·검증
+  ├─ 상품 KG 조회 (Redis / SQLite)
+  ├─ 예상금리·세후 이자 계산
+  └─ 답변 작성·코드 검증·Reviewer 검토
+        ↓
+결과 캐싱 + SQLite 대화 체크포인트 저장
         ↓
 예상금리·세후 이자·근거 반환
 ```
@@ -277,24 +283,43 @@ LLM을 호출하지 않고 Knowledge Graph 조회와 코드 계산만 수행합�
 
 ## 기술 스택
 
-| 영역 | 기술 |
-|---|---|
-| Backend | Python 3.11, FastAPI, Pydantic |
-| Agent workflow | LangGraph, SQLiteSaver checkpointer |
-| LLM | Gemini Extractor / Analyzer / Writer / Reviewer |
-| Database | SQLite |
-| Data source | 금융감독원 금융상품 한눈에 API |
-| Frontend | React, TypeScript, Vite, Tailwind CSS |
-| Validation | Pytest, Vitest, 입력 해석 정답 세트, 결정론적 계산 검증 |
+| 영역 | 기술 | 역할 |
+|---|---|---|
+| 프론트엔드 | React 19, TypeScript 5 | 자연어 입력, 상품 비교, 가정 변경, 대화 결과 복원 |
+| 프론트 빌드 | Vite 8 | 개발 서버 및 프로덕션 정적 파일 빌드 |
+| 스타일·UI | Tailwind CSS 4, Lucide React, SUIT Variable | 디자인 토큰, 반응형 화면, 아이콘, 타이포그래피 |
+| 백엔드 | Python 3.11, FastAPI, Uvicorn | 대화·금융 계산·시나리오 비교 REST API, 단일 워커 실행 |
+| 스키마·설정 | Pydantic 2, Pydantic Settings | 사용자 입력·LLM 출력·API 계약 검증, 환경변수 관리 |
+| 에이전트 오케스트레이션 | LangGraph | 상품 추출 및 사용자 질의 그래프, 조건 분기, 검증, 재시도, fallback |
+| LLM | Gemini API | Extractor, Analyzer, Writer, Reviewer 역할; 모델은 환경변수로 설정 |
+| 외부 API 통신 | HTTPX | Gemini API 및 금융감독원 API 호출 |
+| 금융 데이터 | 금융감독원 금융상품 한눈에 API | 적금 상품, 가입 자격, 우대조건 원문, 기간별 금리 수집 |
+| 금융 계산 | Python 결정론적 계산 엔진 | 조건 충족·가입 자격 판정, 우대 한도·중복 제한, 예상금리·세후 이자 계산 |
+| 상품 저장소 | SQLite | 관계형 테이블 기반 Knowledge Graph, 공시 버전, 추출 기록, 캐시 revision |
+| 대화 저장소 | LangGraph SQLiteSaver | 대화 State 체크포인트, 서버 재시작 후 결과 복원 |
+| 캐싱 | Redis 7.4, redis-py, Python 메모리 캐시 | 상품 KG, 계산, 시나리오, LLM 단계, 최종 결과 캐싱; TTL·LRU·장애 대체 경로 |
+| 웹 서버 | Nginx | React 정적 파일 제공, API 프록시, 컨테이너 주소 재조회 |
+| 컨테이너 실행 | Docker, Docker Compose | 웹·API·Redis 서비스 및 상품 구축 배치, 멀티스테이지 빌드, 상태 확인 |
+| 백엔드 검증 | pytest, 수작업 정답 세트 | 금융 계산·에이전트·저장·캐시 회귀 테스트, 선택적 실제 모델 검증 |
+| 프론트 검증 | Vitest, Testing Library, jsdom | API 클라이언트 및 사용자 화면 흐름 테스트 |
+| 코드 품질·협업 | ESLint, TypeScript 타입 검사, Git, GitHub | 정적 검사, 소스 버전 관리 |
+
+SQLite가 원본 저장소이며 Redis는 재생성 가능한 캐시입니다. 임베딩·벡터 DB 기반
+RAG나 별도 그래프 DB는 사용하지 않고, 계산에 연결된 공시 근거를 직접 제공합니다.
+현재 실행 범위는 로컬 Docker 환경이며 공개 배포용 사용자 인증은 포함하지 않습니다.
 
 ## 프로젝트 구조
 
 ```text
 savings_agent/
+├─ compose.yaml         # 웹·API·Redis·배치 서비스
+├─ .dockerignore        # 비밀키·DB·로컬 의존성 빌드 제외
 ├─ backend/
+│  ├─ Dockerfile        # Python API 및 테스트 이미지
 │  ├─ app/
 │  │  ├─ agent/          # 사용자 질의 Online LangGraph
 │  │  ├─ api/routes/     # ask, evaluate, health API
+│  │  ├─ core/           # 설정·Redis/메모리 캐시
 │  │  ├─ db/             # SQLite 스키마·저장·조회
 │  │  ├─ graph/          # 상품 추출 Offline LangGraph
 │  │  ├─ integrations/   # 금융상품 한눈에 연동
@@ -303,13 +328,16 @@ savings_agent/
 │  ├─ scripts/           # 상품 구축 배치
 │  └─ tests/
 ├─ frontend/
+│  ├─ Dockerfile        # Node 빌드 → Nginx 정적 웹
+│  ├─ nginx.conf        # SPA·API 프록시 설정
 │  └─ src/
 │     ├─ components/     # 상품 카드·근거 drawer·공용 UI
 │     ├─ design-system/  # 토큰·테마·타이포그래피
 │     ├─ lib/            # API client
 │     └─ types/          # API 타입
 └─ data/
-   └─ savings.db
+   ├─ savings.db        # 상품 Knowledge Graph
+   └─ conversations.sqlite  # 대화 체크포인트
 ```
 
 ## 실행 방법
@@ -374,6 +402,108 @@ npm run dev
 ```dotenv
 VITE_API_BASE_URL=http://127.0.0.1:8000
 ```
+
+## Docker로 실행
+
+Docker Desktop을 실행한 뒤 프로젝트 루트에서 진행합니다. 로컬 Python·Node 설치는
+필요하지 않습니다. 기존 수동 실행 방식도 그대로 사용할 수 있습니다.
+
+```bash
+# 처음 실행할 때만 복사하고 두 API 키를 입력합니다. 기존 .env는 덮어쓰지 마세요.
+cp -n .env.example .env
+
+docker compose up --build -d
+```
+
+- 웹: http://localhost:3000
+- API 문서: http://localhost:8000/docs
+- 상태 확인: `docker compose ps`
+- 로그: `docker compose logs -f backend frontend`
+- 중지: `docker compose down`
+
+React 빌드 결과는 Nginx가 제공하며 `/api` 요청을 FastAPI로 전달합니다. API의
+상태 확인이 성공한 다음 웹이 시작됩니다. SQLite 체크포인트와 요청 잠금의 현재
+설계에 맞춰 API는 **단일 워커**로 실행하며 공개 배포용 인증은 추가하지 않습니다.
+호스트 포트는 로컬에서만 접근하도록 바인딩합니다.
+
+상품 DB와 대화 기록은 루트 `data/` 폴더를 컨테이너의 `/app/data`에 연결해 유지합니다.
+컨테이너 중지·재생성으로 이 파일들이 삭제되지는 않습니다. 새 설치에는 상품이
+없으므로 아래 배치를 한 번 실행해야 합니다. 기존 `savings.db`가 있다면 그대로
+사용합니다. `.env`, DB, 로컬 의존성은 이미지에 포함하지 않습니다.
+
+```bash
+# 상품 수집 및 검증: FINLIFE_API_KEY, GEMINI_API_KEY 필요, Gemini 호출 비용 발생
+docker compose --profile batch run --rm batch
+
+# 하루 간격 갱신: 별도 터미널에서 실행, 중지 Ctrl+C
+docker compose --profile batch run --rm batch \
+  python scripts/run_savings_batch.py --db-path /app/data/savings.db --interval-seconds 86400
+```
+
+포트가 이미 사용 중이면 `.env`에 `VERIFIT_WEB_PORT=3001`, `VERIFIT_API_PORT=8001`을
+설정합니다. 데이터 위치도 `VERIFIT_DATA_DIR=/절대경로/data`로 변경할 수 있습니다.
+Linux에서 호스트 데이터 폴더에 쓰기 권한 오류가 나면 컨테이너 사용자 UID `10001`에
+쓰기 권한을 부여해야 합니다. API 키 변경은 `docker compose up -d --force-recreate`,
+코드 변경은 `docker compose up --build -d`로 반영합니다.
+
+이미지 내부 테스트는 실제 API 키나 호스트 DB 없이 실행할 수 있습니다.
+
+```bash
+docker build -f backend/Dockerfile --target test -t verifit-backend-test .
+docker run --rm verifit-backend-test
+docker build -f frontend/Dockerfile --target test -t verifit-frontend-test .
+docker run --rm verifit-frontend-test
+```
+
+## 캐싱
+
+Compose는 Redis를 함께 실행하며, 수동 실행에서 `REDIS_URL`이 없으면 메모리 캐시를
+사용합니다. SQLite는 상품·대화의 원본 저장소로 유지합니다.
+
+| 대상 | 키에 포함되는 정보 | 기본 유효기간 |
+|---|---|---|
+| 상품 KG | DB 고유 ID + 상품 데이터 revision | 1시간 |
+| 금리·이자·추가 질문 계산 | 전체 상품 스냅샷 + 정규화한 사용자 프로필 | 30분 |
+| 시나리오 비교 | 상품 스냅샷 + 기준 프로필 + 변경 가정 | 30분 |
+| Analyzer·Writer·Reviewer | 모델·계정 해시 + 전체 프롬프트·스키마·입력·피드백 | 10분 |
+| 최종 Agent 결과 | 전체 사용자 대화 + 상품 스냅샷 + 모델·계정 해시 | 10분 |
+| 대화 결과 복원 | 대화 ID + SQLite 체크포인트 ID | 10분 |
+| 배치 추출·검토 | 모델·계정 해시 + 원문·금리·프롬프트·피드백 | 10분 |
+
+모든 키에 앱 소스 버전 해시가 들어가므로 계산 코드·프롬프트·스키마가 바뀌면
+기존 캐시를 재사용하지 않습니다. 상품 테이블 변경은 SQLite 트리거가 같은 트랜잭션에서
+revision을 갱신합니다. 배치, 비활성화, 직접 SQL 변경도 다음 요청부터 새 KG 캐시를
+사용하고, 해당 상품 스냅샷을 사용하는 계산·답변 키도 바뀝니다. 이전 캐시는 TTL로
+정리됩니다. 커밋되지 않은 상품은 공유 캐시에 넣지 않습니다.
+
+최종 결과 캐시가 적중해도 요청자의 별도 `thread_id`와 체크포인트를 저장해 후속
+대화가 이어집니다. HTTP 오류·파싱 실패·거부된 검토·최종 실패 및 fallback 응답은
+최종 성공 결과처럼 캐싱하지 않습니다. LLM 단계의 구조화 출력은 캐시에서 가져온
+경우에도 그래프의 입력·금융 수치·근거 검증을 거칩니다. 배치의 self-consistency는
+독립적인 N회 추출 결과를 **한 세트**로 캐싱해, 같은 응답을 N번 복제하지 않습니다.
+금융감독원 수집, DB 쓰기, 체크포인트 쓰기와 상태 점검은 캐싱하지 않습니다.
+
+Redis는 호스트 포트를 열지 않고 영속화를 끕니다. 사용자 입력·결과가 TTL 동안
+Redis 메모리에 포함되지만 키에는 원문이나 API 키를 넣지 않습니다. Redis는 128MB
+한도와 LRU 제거, 로컬 캐시는 512건·32MB 한도, 단일 값은 2MB 한도를 사용합니다.
+Redis 장애 시 짧은 타임아웃 후 메모리 캐시로 전환하며 복구 시 Redis를 다시 조회합니다.
+캐시가 없어도 SQLite·계산·LLM 경로로 정상 동작합니다. 동일 요청 중복 계산 억제는
+현재 단일 API 프로세스 안에서만 적용됩니다.
+
+설정은 `.env.example`의 `CACHE_*`를 참고하세요. `CACHE_ENABLED=false`로 전체 캐시를
+우회하거나 대상 TTL을 `0`으로 지정해 해당 계층만 끌 수 있습니다. Compose에서 설정을
+바꾸면 `docker compose up -d --force-recreate`로 반영합니다.
+
+```bash
+# 키나 사용자 내용 없이 프로세스의 계층별 hit/miss/store 확인
+curl http://localhost:3000/api/v1/cache/status
+
+# Redis 캐시 전체 비우기 (원본 SQLite DB와 대화 기록은 유지)
+docker compose exec redis redis-cli FLUSHDB
+```
+
+모델 회귀·실제 모델 검증 스크립트는 캐시를 우회합니다. 과거 캐시 적중을 새 모델의
+성능이나 실제 호출 결과로 기록하지 않습니다.
 
 ## API
 

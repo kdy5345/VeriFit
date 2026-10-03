@@ -9,6 +9,8 @@ from app.schemas.user import ConditionStatus, UserProfile
 from app.services.interest import calculate_savings_interest
 from app.services.matching import ProductMatch, find_matches
 from app.services.next_question import build_next_question
+from app.core.cache import cached
+from app.core.config import settings
 
 
 def product_key(pm: ProductMatch) -> str:
@@ -38,6 +40,12 @@ def result_for_match(pm: ProductMatch, profile: UserProfile) -> ProductResult:
 
 
 def evaluate_products(products: list[Product], profile: UserProfile) -> EvaluateResponse:
+    return cached("calculation", {"products": [p.model_dump(mode="json") for p in products],
+                                  "profile": profile.model_dump(mode="json")}, EvaluateResponse,
+                  lambda: _evaluate_products(products, profile), settings.cache_calculation_ttl)
+
+
+def _evaluate_products(products: list[Product], profile: UserProfile) -> EvaluateResponse:
     matches = find_matches(products, profile)
     available = [pm for pm in matches if pm.eligibility_status != ConditionStatus.UNSATISFIED]
     results = sorted([result_for_match(pm, profile) for pm in available], key=lambda r: (-r.after_tax_interest_won, r.product_key))
@@ -46,6 +54,12 @@ def evaluate_products(products: list[Product], profile: UserProfile) -> Evaluate
 
 
 def compare_scenarios(products: list[Product], request: ScenarioRequest) -> ScenarioResponse:
+    return cached("scenarios", {"products": [p.model_dump(mode="json") for p in products],
+                                "request": request.model_dump(mode="json")}, ScenarioResponse,
+                  lambda: _compare_scenarios(products, request), settings.cache_calculation_ttl)
+
+
+def _compare_scenarios(products: list[Product], request: ScenarioRequest) -> ScenarioResponse:
     baseline = evaluate_products(products, request.baseline)
     by_key = {r.product_key: (rank, r) for rank, r in enumerate(baseline.results, 1)}
     scenarios = []

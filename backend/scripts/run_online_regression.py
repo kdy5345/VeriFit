@@ -19,6 +19,16 @@ def semantic(analysis):
 
 
 def run(live=False, limit=None):
+    # A model regression must make fresh calls, not measure cached answers.
+    previous_cache = settings.cache_enabled
+    settings.cache_enabled = False
+    try:
+        return _run(live, limit)
+    finally:
+        settings.cache_enabled = previous_cache
+
+
+def _run(live=False, limit=None):
     cases = json.loads(GOLD_PATH.read_text(encoding="utf-8"))["cases"]
     if limit is not None:
         cases = cases[:limit]

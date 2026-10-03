@@ -96,3 +96,24 @@ CREATE TABLE IF NOT EXISTS extraction_log (
     created_at TEXT NOT NULL
 );
 """
+
+# Revision changes atomically with KG writes, including batch and direct SQL.
+SCHEMA_SQL += """
+CREATE TABLE IF NOT EXISTS cache_revision (
+    singleton INTEGER PRIMARY KEY CHECK (singleton=1),
+    database_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO cache_revision(singleton, database_id, revision)
+VALUES (1, lower(hex(randomblob(16))), 0);
+"""
+for _table in ("institutions", "products", "eligibility", "rate_options", "bonuses",
+               "bonus_requirements", "bonus_exclusive_pairs"):
+    for _event in ("INSERT", "UPDATE", "DELETE"):
+        SCHEMA_SQL += f"""
+CREATE TRIGGER IF NOT EXISTS cache_revision_{_table}_{_event.lower()}
+AFTER {_event} ON {_table}
+BEGIN
+    UPDATE cache_revision SET revision=revision+1 WHERE singleton=1;
+END;
+"""

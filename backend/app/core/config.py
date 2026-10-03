@@ -24,6 +24,18 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     gemini_timeout_seconds: float = 30.0
 
+    cache_enabled: bool = True
+    redis_url: SecretStr | None = None
+    cache_prefix: str = "verifit:v1"
+    cache_products_ttl: int = 3600
+    cache_calculation_ttl: int = 1800
+    cache_llm_ttl: int = 600
+    cache_response_ttl: int = 600
+    cache_max_entries: int = 512
+    cache_max_value_bytes: int = 2_000_000
+    cache_memory_max_bytes: int = 32_000_000
+    cache_redis_timeout_seconds: float = 0.3
+
     model_config = SettingsConfigDict(
         env_file=PROJECT_ROOT / ".env",
         env_file_encoding="utf-8",

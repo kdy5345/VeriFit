@@ -22,9 +22,25 @@ from app.schemas.graph import (
     ReserveType,
 )
 from app.schemas.requirements import RequirementCode
+from app.core.cache import cached
+from app.core.config import settings
 
 
 def load_products(conn: sqlite3.Connection) -> list[Product]:
+    # Never publish uncommitted data to a shared cache.
+    if conn.in_transaction:
+        return _load_products(conn)
+    conn.execute("BEGIN")
+    try:
+        row = conn.execute("SELECT database_id, revision FROM cache_revision WHERE singleton=1").fetchone()
+        return cached("products", {"database": row[0], "revision": row[1]}, list[Product],
+                      lambda: _load_products(conn), settings.cache_products_ttl)
+    finally:
+        # Close our read snapshot; caller-owned transactions are left untouched.
+        conn.rollback()
+
+
+def _load_products(conn: sqlite3.Connection) -> list[Product]:
     conn.row_factory = sqlite3.Row
     products: list[Product] = []
 

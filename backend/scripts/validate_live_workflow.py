@@ -12,6 +12,7 @@ from app.db.store import connect
 
 
 def main():
+    settings.cache_enabled = False  # This script verifies actual model calls.
     # 기존 상품 DB·대화 기록은 변경하지 않는다.
     with TemporaryDirectory(prefix="verifit-live-") as temp:
         copied = Path(temp) / "products.db"

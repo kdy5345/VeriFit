@@ -12,6 +12,8 @@ from app.schemas.agent import (
     DraftAnswer,
 )
 from app.schemas.requirements import REQUIREMENT_DEFINITIONS
+from app.core.cache import cached, fingerprint
+from app.core.config import settings
 
 
 class OnlineAgentLlmError(RuntimeError):
@@ -262,6 +264,18 @@ class GeminiOnlineAgent:
         system: str,
         data: dict[str, Any],
         schema: type[T],
+        examples: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
+    ) -> T:
+        # Full prompt, schema, model, account and prior feedback are part of the key.
+        # Cache hits still pass validate_input / verify_answer / review graph nodes.
+        return cached(f"llm_{schema.__name__}", {
+            "model": self._model, "account": fingerprint(self._api_key), "system": system,
+            "data": data, "schema": schema.model_json_schema(), "examples": examples,
+        }, schema, lambda: self._uncached_call(system, data, schema, examples), settings.cache_llm_ttl,
+            cacheable=lambda result: not isinstance(result, AnswerReview) or result.approved)
+
+    def _uncached_call(
+        self, system: str, data: dict[str, Any], schema: type[T],
         examples: list[tuple[dict[str, Any], dict[str, Any]]] | None = None,
     ) -> T:
         contents: list[dict[str, Any]] = []
