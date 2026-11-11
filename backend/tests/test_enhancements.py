@@ -201,8 +201,10 @@ def test_hallucinated_fact_numbers_rejected():
     analysis = AnalyzedUserInput(monthly_deposit_won=300000, monthly_deposit_quote="30만 원", term_months=12, term_quote="1년",
         facts=[AnalyzedFact(code=Code.CARD_USAGE_AMOUNT, satisfied=True, amount_won=900000, evidence_quote="카드 10만 원")])
     result = nodes.validate_input({"message": "월 30만 원 1년 카드 10만 원", "analysis": analysis})
-    assert result["profile"] is None
-    assert "실적 금액" in result["errors"][0]
+    # 원문과 다른 실적 금액은 버려서 우대를 부풀리지 않고, 나머지 계산은 이어간다.
+    card = result["profile"].facts[Code.CARD_USAGE_AMOUNT]
+    assert card.satisfied is True and card.amount_won is None
+    assert "amount_won" in result["input_warnings"][0]
 
 
 def test_gold_contract_and_model_prompt_regression_metadata():
@@ -241,8 +243,61 @@ def test_refresh_skips_unchanged_but_replaces_changed_and_disables_failed(tmp_pa
     assert fake.calls == 1
     assert load_products(conn)[0].source_hash == batch._compute_source_hash(changed, changed.options)
     fake.fail = True
-    batch._process_products(conn, [replace(changed, spcl_cnd="불명확 조건")], True)
+    unclear = replace(changed, spcl_cnd="불명확 조건")
+    batch._process_products(conn, [unclear], True)
     assert load_products(conn) == []
+    # 전부 제외된 상품도 원문이 그대로면 다음 주기에 다시 추출하지 않는다.
+    batch._process_products(conn, [unclear], True)
+    assert fake.calls == 2
+    # 원문이 바뀌면 다시 추출한다.
+    batch._process_products(conn, [replace(unclear, spcl_cnd="바뀐 조건")], True)
+    assert fake.calls == 3
+    conn.close()
+
+
+def test_refresh_retries_products_whose_extractor_call_failed(tmp_path, monkeypatch):
+    from app.services.verification import synthetic_extractor_failure_verdict
+    from app.schemas.graph import ReserveType
+    path = Path(__file__).parents[1] / "scripts" / "run_savings_batch.py"
+    spec = spec_from_file_location("refresh_retry_test", path)
+    batch = module_from_spec(spec); spec.loader.exec_module(batch)
+    raw = RawSavingsProduct(institution_name="테스트은행", product_name="장애적금", product_code="code2", disclosed_month="202609",
+        join_member="누구나", join_way="mobile", spcl_cnd="조건", max_limit_won=None,
+        options=(RawOption(term_months=12, reserve_type="fixed", compounding="simple", base_rate_bps=200, max_rate_bps=300),))
+    conn = connect(tmp_path / "products.db")
+    class ApiDown:
+        calls = 0
+        def invoke(self, state):
+            self.calls += 1
+            verdict = synthetic_extractor_failure_verdict(12, 200, 300, ReserveType.FIXED, "Gemini API에 연결하지 못했습니다.")
+            return {"retry_count": 1, "accepted_terms": [], "excluded_terms": {12: "Extractor 오류"}, "product": None, "verdicts": [verdict]}
+    fake = ApiDown()
+    monkeypatch.setattr(batch, "extraction_graph", fake)
+    batch._process_products(conn, [raw], True)
+    batch._process_products(conn, [raw], True)
+    assert fake.calls == 2  # 장애로 끝난 상품은 건너뛰지 않는다
+    conn.close()
+
+
+def test_one_product_crash_does_not_stop_batch(tmp_path, monkeypatch):
+    path = Path(__file__).parents[1] / "scripts" / "run_savings_batch.py"
+    spec = spec_from_file_location("refresh_crash_test", path)
+    batch = module_from_spec(spec); spec.loader.exec_module(batch)
+    base = RawSavingsProduct(institution_name="테스트은행", product_name="첫상품", product_code="c", disclosed_month="202609",
+        join_member="누구나", join_way="mobile", spcl_cnd="조건", max_limit_won=None,
+        options=(RawOption(term_months=12, reserve_type="fixed", compounding="simple", base_rate_bps=200, max_rate_bps=300),))
+    conn = connect(tmp_path / "products.db")
+    class CrashFirst:
+        calls = 0
+        def invoke(self, state):
+            self.calls += 1
+            if state["product_name"] == "첫상품":
+                raise RuntimeError("예상 못한 오류")
+            return {"retry_count": 0, "accepted_terms": [], "excluded_terms": {12: "검증 실패"}, "product": None}
+    fake = CrashFirst()
+    monkeypatch.setattr(batch, "extraction_graph", fake)
+    batch._process_products(conn, [base, replace(base, product_name="둘째상품")], True)
+    assert fake.calls == 2
     conn.close()
 
 

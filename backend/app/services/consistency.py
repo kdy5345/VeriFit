@@ -10,7 +10,8 @@
 병합 방식: runs[0]을 기준(baseline)으로 삼고, 같은 term의 다른 run들 중 동일한
 evidence_quote(공백만 정규화, 텍스트는 그대로)를 가진 항목을 찾아 "숫자까지 포함해"
 전부 같은지 대조한다. 하나라도 다르거나, 다른 run에 그 term 자체가 통째로 없거나,
-그 quote를 아예 못 찾으면 그 항목은 codes=[other]로 강등한다.
+그 quote를 아예 못 찾으면 그 항목은 codes=[other]로 강등한다. term 단위의 합산 한도와
+중복 불가 쌍도 비교해, 갈리면 사용자 금리가 낮아지는 쪽(낮은 한도, 쌍의 합집합)을 쓴다.
 
 수정 이력: 처음 버전은 fingerprint에 codes·combinator만 넣어서, rate_bps나
 min_amount_won 같은 숫자가 run마다 달라도 "합의됨"으로 잘못 처리했다. 또한 어떤
@@ -88,6 +89,46 @@ class ConsistencyReport:
     total_bonuses: int = 0
     downgraded: list[str] = field(default_factory=list)  # "term_months:label" 형태 기록
     downgraded_eligibility: list[str] = field(default_factory=list)
+    group_conflicts: list[str] = field(default_factory=list)  # 합산 한도·중복 불가 불일치
+
+    def notes(self) -> list[str]:
+        """extraction_log에 남길 사람이 읽는 기록. 기간별 항목은 '12개월:' 접두어를 가진다."""
+        return ([f"{item} 강등" for item in self.downgraded] + self.group_conflicts
+                + [f"가입자격:{item} 강등" for item in self.downgraded_eligibility])
+
+
+def _merge_group_fields(term_option: LlmRateOptionBonuses, others: list[LlmRateOptionBonuses | None],
+                        report: ConsistencyReport) -> dict:
+    """합산 한도와 중복 불가 쌍도 run마다 비교한다. 갈리면 사용자 금리가 낮아지는 쪽을 쓴다.
+
+    - 한도: 하나라도 한도를 읽었다면 그중 가장 낮은 값 (한도는 금리를 깎기만 한다)
+    - 중복 불가: 모든 run의 쌍을 합친다 (쌍이 늘면 동시에 받을 수 있는 우대가 줄어든다)
+    bonus id는 run마다 다를 수 있어 쌍은 evidence_quote로 맞춰 비교한다.
+    그래도 공시 최고금리와 안 맞으면 다음 단계의 도달가능성 검사가 걸러낸다.
+    """
+    term = term_option.term_months
+    present = [o for o in others if o is not None]
+    caps = [term_option.group_cap_bps] + [o.group_cap_bps for o in present]
+    merged_cap = term_option.group_cap_bps
+    if len(set(caps)) > 1:
+        known = [c for c in caps if c is not None]
+        merged_cap = min(known)
+        report.group_conflicts.append(f"{term}개월:합산 한도 불일치 {caps} → {merged_cap}bp 적용")
+
+    def quote_pairs(option: LlmRateOptionBonuses) -> set[frozenset[str]]:
+        quotes = {b.id: _normalize(b.evidence_quote) for b in option.bonuses}
+        return {frozenset((quotes[a], quotes[b])) for a, b in (p for p in option.exclusive_bonus_id_pairs if len(p) == 2)
+                if a in quotes and b in quotes and a != b}
+
+    baseline_pairs = quote_pairs(term_option)
+    all_pairs = set(baseline_pairs)
+    for option in present:
+        all_pairs |= quote_pairs(option)
+    id_by_quote = {_normalize(b.evidence_quote): b.id for b in term_option.bonuses}
+    merged_pairs = [sorted(id_by_quote[q] for q in pair) for pair in all_pairs if all(q in id_by_quote for q in pair)]
+    if all_pairs != baseline_pairs:
+        report.group_conflicts.append(f"{term}개월:중복 불가 조건 불일치 → 모든 시도의 쌍 {len(merged_pairs)}개 적용")
+    return {"group_cap_bps": merged_cap, "exclusive_bonus_id_pairs": merged_pairs}
 
 
 def _already_other(codes: list[RequirementCode]) -> bool:
@@ -141,10 +182,12 @@ def merge_self_consistency(runs: list[LlmExtraction]) -> tuple[LlmExtraction, Co
                 report.downgraded.append(f"{term_option.term_months}개월:{bonus.label}")
                 merged_bonuses.append(_downgrade_bonus_to_other(bonus))
 
+        others = [
+            next((o for o in run.rate_options if o.term_months == term_option.term_months), None)
+            for run in other_runs
+        ]
         merged_rate_options.append(
-            # cap_bps·exclusive_pairs 같은 term 단위 다른 필드는 baseline 값을 그대로
-            # 이어받는다 (bonuses만 병합 대상이다).
-            term_option.model_copy(update={"bonuses": merged_bonuses})
+            term_option.model_copy(update={"bonuses": merged_bonuses, **_merge_group_fields(term_option, others, report)})
         )
 
     # --- 가입자격 (eligibility) -----------------------------------------------

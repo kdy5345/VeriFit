@@ -23,6 +23,11 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
     if "active" not in columns:
         conn.execute("ALTER TABLE products ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+    log_columns = {row[1] for row in conn.execute("PRAGMA table_info(extraction_log)")}
+    if "reviewer_unavailable" not in log_columns:
+        conn.execute("ALTER TABLE extraction_log ADD COLUMN reviewer_unavailable INTEGER NOT NULL DEFAULT 0")
+    if "consistency_notes" not in log_columns:
+        conn.execute("ALTER TABLE extraction_log ADD COLUMN consistency_notes TEXT")
     conn.commit()
     return conn
 
@@ -157,11 +162,26 @@ def log_extraction_result(
     status: str,
     reason: str | None,
     retry_count: int,
+    reviewer_unavailable: bool = False,
+    consistency_notes: list[str] | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO extraction_log "
-        "(institution_name, product_name, term_months, status, reason, retry_count, created_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (institution_name, product_name, term_months, status, reason, retry_count, _now()),
+        "(institution_name, product_name, term_months, status, reason, retry_count, created_at, "
+        "reviewer_unavailable, consistency_notes) VALUES (?,?,?,?,?,?,?,?,?)",
+        (institution_name, product_name, term_months, status, reason, retry_count, _now(),
+         int(reviewer_unavailable), json.dumps(consistency_notes, ensure_ascii=False) if consistency_notes else None),
     )
     conn.commit()
+
+
+def record_source_check(conn: sqlite3.Connection, institution_name: str, product_name: str,
+                        disclosed_month: str, source_hash: str, outcome: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO source_checks (institution_name, product_name, disclosed_month, source_hash, outcome, checked_at) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT(institution_name, product_name) DO UPDATE SET "
+            "disclosed_month=excluded.disclosed_month, source_hash=excluded.source_hash, outcome=excluded.outcome, "
+            "checked_at=excluded.checked_at",
+            (institution_name, product_name, disclosed_month, source_hash, outcome, _now()),
+        )

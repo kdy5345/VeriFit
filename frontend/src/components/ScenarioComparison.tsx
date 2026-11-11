@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { ScenarioResponse, UserProfile } from "../types/agent";
 import { compareScenarios } from "../lib/api";
-import { Card } from "./ui/Card";
-import { Button } from "./ui/Button";
+import { formatWon, reserveLabel } from "../lib/format";
 import { Field, Input, Select } from "./ui/Field";
-
-const money = new Intl.NumberFormat("ko-KR");
 
 export function ScenarioComparison({ profile }: { profile: UserProfile }) {
   const [amount, setAmount] = useState(String(profile.monthly_deposit_won));
@@ -38,27 +35,40 @@ export function ScenarioComparison({ profile }: { profile: UserProfile }) {
     }
   }
 
-  return <Card className="mt-6">
-    <h3 className="m-0 text-body">조건을 바꾸면 얼마나 달라질까요?</h3>
-    <p className="mt-2 text-callout text-content-assistive">현재 결과는 유지하고, 변경한 가정을 나란히 비교합니다.</p>
+  const scenario = result?.scenarios[0];
+  return <div>
     <form onSubmit={(event) => {event.preventDefault(); void compare();}} className="grid gap-3 sm:grid-cols-3">
-      <Field label="월 납입액 (원)"><Input type="number" disabled={loading} min="1" step="1" value={amount} onChange={(e) => {setAmount(e.target.value); setResult(null);}} /></Field>
-      <Field label="기간 (개월)"><Input type="number" disabled={loading} min="1" max="60" step="1" value={term} onChange={(e) => {setTerm(e.target.value); setResult(null);}} /></Field>
-      <Field label="급여이체 가정"><Select value={salary} disabled={loading} onChange={(e) => {setSalary(e.target.value); setResult(null);}}><option value="unchanged">현재 조건 유지</option><option value="yes">가능하다고 가정</option><option value="no">불가능하다고 가정</option></Select></Field>
-      <div className="sm:col-span-3"><Button type="submit" disabled={loading}>{loading ? "재계산 중…" : "가정 비교하기"}</Button></div>
+      <Field label="월 납입액 (원)"><Input type="number" inputMode="numeric" disabled={loading} min="1" step="1" value={amount} onChange={(e) => {setAmount(e.target.value); setResult(null);}} /></Field>
+      <Field label="기간 (개월)"><Input type="number" inputMode="numeric" disabled={loading} min="1" max="60" step="1" value={term} onChange={(e) => {setTerm(e.target.value); setResult(null);}} /></Field>
+      <Field label="급여이체 가정"><Select value={salary} disabled={loading} onChange={(e) => {setSalary(e.target.value); setResult(null);}}><option value="unchanged">지금 조건 그대로</option><option value="yes">가능하다고 가정</option><option value="no">불가능하다고 가정</option></Select></Field>
+      <button type="submit" disabled={loading} className="min-h-12 rounded-2xl border-0 bg-background-fill-strong text-callout font-bold text-content transition-colors hover:bg-background-fill disabled:cursor-wait disabled:opacity-60 sm:col-span-3">{loading ? "다시 계산하는 중" : "가정 비교하기"}</button>
     </form>
-    {error && <p role="alert" className="text-callout text-danger">{error}</p>}
-    {result && <div className="mt-5 overflow-x-auto" aria-live="polite">
-      <table className="w-full text-left text-callout"><caption className="mb-3 text-left font-bold">세후 이자 비교 · 월 {money.format(Number(amount))}원 / {term}개월</caption>
-        <thead><tr><th className="py-2">상품</th><th>기존 → 변경 순위</th><th>변경 세후 이자</th><th>차이</th></tr></thead>
-        <tbody>{result.scenarios[0].evaluation.results.map((product) => {
-          const delta = result.scenarios[0].deltas.find((d) => d.product_key === product.product_key);
-          return <tr key={product.product_key} className="border-t border-border-divider"><td className="py-3 pr-3">{product.institution_name} {product.product_name}<small className="block text-content-assistive">{product.reserve_type === "free" ? "자유적립" : "정액적립"} · {product.term_months}개월</small>{product.eligibility_status === "unknown" && <small className="block text-content-assistive">자격 확인 필요</small>}</td><td>{delta?.baseline_rank ?? "신규"} → {delta?.scenario_rank}</td><td>{money.format(product.after_tax_interest_won)}원</td><td>{delta?.after_tax_interest_delta_won == null ? "비교 기준 없음" : `${delta.after_tax_interest_delta_won > 0 ? "+" : ""}${money.format(delta.after_tax_interest_delta_won)}원`}</td></tr>;
-        })}</tbody>
-      </table>
-      {result.scenarios[0].evaluation.results.length === 0 && <p>변경한 조건에 맞는 상품이 없습니다.</p>}
-      {result.scenarios[0].evaluation.excluded_results.map((product) => <p key={product.product_key} className="text-footnote text-content-assistive">비교 제외: {product.product_name} — {product.eligibility_reasons.join(" · ")}</p>)}
-      <p className="text-footnote leading-5 text-content-assistive">{result.disclaimer} 미확인 세부 조건은 자동 충족으로 바꾸지 않습니다.</p>
+    {error && <p role="alert" className="mb-0 mt-3 text-callout text-danger">{error}</p>}
+    {scenario && <div className="mt-5" aria-live="polite">
+      <p className="m-0 text-callout font-bold">월 {formatWon(Number(amount))}원, {term}개월로 바꾸면</p>
+      <ul className="mb-0 mt-2 list-none divide-y divide-border-divider p-0">
+        {scenario.evaluation.results.map((product) => {
+          const delta = scenario.deltas.find((d) => d.product_key === product.product_key);
+          const diff = delta?.after_tax_interest_delta_won;
+          return <li key={product.product_key} className="flex items-center gap-3 py-3">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-callout font-bold">{product.product_name}</span>
+              <span className="flex flex-wrap gap-x-2 text-footnote text-content-assistive">
+                <span>{product.institution_name}</span><span>{reserveLabel(product.reserve_type)}</span>
+                <span>{delta?.baseline_rank ? `${delta.baseline_rank}위에서 ${delta.scenario_rank}위` : `새로 ${delta?.scenario_rank}위`}</span>
+                {product.eligibility_status === "unknown" && <span className="text-danger">자격 확인 필요</span>}
+              </span>
+            </span>
+            <span className="shrink-0 text-right tabular-nums">
+              <span className="block text-callout font-bold">{formatWon(product.after_tax_interest_won)}원</span>
+              <span className={`block text-footnote ${diff == null ? "text-content-assistive" : diff > 0 ? "text-brand" : diff < 0 ? "text-danger" : "text-content-assistive"}`}>{diff == null ? "비교 기준 없음" : `${diff > 0 ? "+" : ""}${formatWon(diff)}원`}</span>
+            </span>
+          </li>;
+        })}
+      </ul>
+      {scenario.evaluation.results.length === 0 && <p className="text-callout text-content-assistive">바꾼 조건에 맞는 상품이 없어요.</p>}
+      {scenario.evaluation.excluded_results.map((product) => <p key={product.product_key} className="mb-0 mt-2 text-footnote text-content-assistive">제외: {product.product_name}, {product.eligibility_reasons.join(", ")}</p>)}
+      <p className="mb-0 mt-3 text-footnote leading-5 text-content-assistive">기간이 다르면 넣는 원금도 달라져요. 미확인 조건은 충족으로 바꾸지 않고 계산했어요.</p>
     </div>}
-  </Card>;
+  </div>;
 }

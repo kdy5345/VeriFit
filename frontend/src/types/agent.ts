@@ -60,6 +60,7 @@ export interface AskResponse {
   used_fallback: boolean;
   retry_count: number;
   verification_errors: string[];
+  input_warnings?: string[];
   disclaimer: string;
 }
 

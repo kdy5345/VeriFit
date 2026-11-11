@@ -204,7 +204,8 @@ def test_reviewer_failure_uses_deterministic_fallback(tmp_path, monkeypatch) -> 
 
     assert body["status"] == "completed"
     assert body["used_fallback"] is True
-    assert body["retry_count"] == 1
+    # 검토 없이 재작성해 봐야 다시 검토할 수 없으므로 바로 정형 답변으로 간다.
+    assert body["retry_count"] == 0
     assert "검증된 계산 결과" in body["answer"]
     app.dependency_overrides.clear()
 

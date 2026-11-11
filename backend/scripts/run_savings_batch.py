@@ -21,7 +21,7 @@ from contextlib import closing
 from collections import Counter
 
 from app.core.config import settings
-from app.db.store import connect, log_extraction_result, save_product, deactivate_product
+from app.db.store import connect, deactivate_product, log_extraction_result, record_source_check, save_product
 from app.graph.workflow import extraction_graph
 from app.integrations.finlife import RawOption, RawSavingsProduct, fetch_savings_products
 from app.schemas.graph import ProductCategory, ReserveType
@@ -41,9 +41,18 @@ def _compute_source_hash(product: RawSavingsProduct, options: tuple[RawOption, .
 
 
 def _unchanged(conn, product: RawSavingsProduct) -> bool:
+    """원문이 그대로면 다시 추출하지 않는다.
+    - 등록된 상품: 활성 상품의 원문 해시가 같을 때
+    - 전부 제외된 상품: 마지막으로 끝까지 검증한 원문 해시가 같을 때 (매 주기 Gemini 재호출 방지)
+    """
+    source_hash = _compute_source_hash(product, product.options)
     row = conn.execute("SELECT p.source_hash FROM products p JOIN institutions i ON i.id=p.institution_id WHERE i.name=? AND p.name=? AND p.disclosed_month=? AND p.active=1",
                        (product.institution_name, product.product_name, product.disclosed_month)).fetchone()
-    return row is not None and row[0] == _compute_source_hash(product, product.options)
+    if row is not None and row[0] == source_hash:
+        return True
+    check = conn.execute("SELECT source_hash FROM source_checks WHERE institution_name=? AND product_name=? AND outcome='excluded'",
+                         (product.institution_name, product.product_name)).fetchone()
+    return check is not None and check[0] == source_hash
 
 
 def run(limit: int | None, db_path: str, top_fin_grp_no: str, resume: bool) -> None:
@@ -70,78 +79,22 @@ def _process_products(conn, raw_products, resume):
     accepted_terms_count = 0
     excluded_reasons: Counter[str] = Counter()
 
+    failed_products: list[str] = []
+    reviewer_skipped_terms = 0
     for product in raw_products:
         # 변경 원문의 검증이 끝나기 전에는 이전 금리를 현재 추천으로 쓰지 않는다.
         deactivate_product(conn, product.institution_name, product.product_name)
-        accepted_sub_products = []  # 적립방식별로 나온 product를 나중에 하나로 합친다.
-        for reserve_type, options in product.options_by_reserve_type().items():
-            combo_count += 1
-            known_rate_options = [
-                {
-                    "term_months": o.term_months,
-                    "base_rate_bps": o.base_rate_bps,
-                    "max_rate_bps": o.max_rate_bps,
-                }
-                for o in options
-            ]
-            # 단리/복리는 우대조건 해석과 무관한 API 확정값이라 LLM에는 안 보내고,
-            # verify 노드가 RateOption을 만들 때만 참조하도록 따로 넘긴다.
-            compounding_by_term = {o.term_months: o.compounding for o in options}
-            state_input = {
-                "institution_name": product.institution_name,
-                "product_name": product.product_name,
-                "category": ProductCategory.SAVINGS,
-                "disclosed_month": product.disclosed_month,
-                "source_hash": _compute_source_hash(product, options),
-                "join_way": product.join_way,
-                "max_limit_won": product.max_limit_won,
-                "join_member": product.join_member,
-                "spcl_cnd": product.spcl_cnd,
-                "known_rate_options": known_rate_options,
-                "compounding_by_term": compounding_by_term,
-                "reserve_type": ReserveType(reserve_type),
-            }
-            print(
-                f"[{combo_count}] {product.institution_name} / {product.product_name} ({reserve_type})",
-                flush=True,
-            )
-            result = extraction_graph.invoke(state_input)
-            retry_count = result.get("retry_count", 0)
-
-            for term in result["accepted_terms"]:
-                total_terms += 1
-                accepted_terms_count += 1
-                log_extraction_result(
-                    conn, product.institution_name, product.product_name, term, "accepted", None, retry_count
-                )
-            for term, reason in result["excluded_terms"].items():
-                total_terms += 1
-                log_extraction_result(
-                    conn, product.institution_name, product.product_name, term, "excluded", reason, retry_count
-                )
-                key = reason.split(";")[0].split("(")[0].strip()
-                excluded_reasons[key] += 1
-
-            if result["product"] is not None:
-                accepted_sub_products.append(result["product"])
-            print(
-                f"    accepted={result['accepted_terms']} excluded={list(result['excluded_terms'])} "
-                f"retry={retry_count}",
-                flush=True,
-            )
-
-        # 적립방식별로 따로 나온 product들을 rate_options 기준으로 한 상품에 합쳐서
-        # 한 번만 저장한다 (따로 저장하면 나중 저장이 먼저 저장을 덮어쓴다).
-        if accepted_sub_products:
-            merged_rate_options = [ro for sp in accepted_sub_products for ro in sp.rate_options]
-            merged_eligibility = accepted_sub_products[0].eligibility
-            merged_product = accepted_sub_products[0].model_copy(
-                update={"rate_options": merged_rate_options, "eligibility": merged_eligibility,
-                        "source_hash": _compute_source_hash(product, product.options)}
-            )
-            save_product(conn, merged_product)
-        else:
-            deactivate_product(conn, product.institution_name, product.product_name)
+        try:
+            stats = _process_product(conn, product)
+        except Exception as exc:  # 한 상품의 예기치 못한 오류로 배치 전체를 멈추지 않는다.
+            failed_products.append(f"{product.institution_name} / {product.product_name}: {exc}")
+            print(f"    처리 실패, 비활성 상태로 두고 다음 상품으로 넘어갑니다: {exc}", flush=True)
+            continue
+        combo_count += stats["combos"]
+        total_terms += stats["terms"]
+        accepted_terms_count += stats["accepted"]
+        reviewer_skipped_terms += stats["reviewer_skipped"]
+        excluded_reasons.update(stats["excluded_reasons"])
 
     print(flush=True)
     print(f"=== 요약: 상품 {len(raw_products)}개 (적립방식 조합 {combo_count}개)", flush=True)
@@ -149,6 +102,88 @@ def _process_products(conn, raw_products, resume):
     print("제외 사유 분포:", flush=True)
     for reason, count in excluded_reasons.most_common():
         print(f"  {reason}: {count}건", flush=True)
+    if reviewer_skipped_terms:
+        print(f"Reviewer 없이 코드 검증만으로 등록된 term: {reviewer_skipped_terms}개", flush=True)
+    if failed_products:
+        print(f"처리 실패 상품 {len(failed_products)}개 (다음 실행에서 다시 시도):", flush=True)
+        for item in failed_products:
+            print(f"  {item}", flush=True)
+
+
+def _process_product(conn, product: RawSavingsProduct) -> dict:
+    """상품 하나의 적립방식별 추출·검증 결과를 기록하고, 통과한 RateOption을 한 번에 저장한다."""
+    stats = {"combos": 0, "terms": 0, "accepted": 0, "reviewer_skipped": 0, "excluded_reasons": Counter()}
+    accepted_sub_products = []  # 적립방식별로 나온 product를 나중에 하나로 합친다.
+    extractor_failed = False
+    for reserve_type, options in product.options_by_reserve_type().items():
+        stats["combos"] += 1
+        known_rate_options = [
+            {"term_months": o.term_months, "base_rate_bps": o.base_rate_bps, "max_rate_bps": o.max_rate_bps}
+            for o in options
+        ]
+        # 단리/복리는 우대조건 해석과 무관한 API 확정값이라 LLM에는 안 보내고,
+        # verify 노드가 RateOption을 만들 때만 참조하도록 따로 넘긴다.
+        compounding_by_term = {o.term_months: o.compounding for o in options}
+        state_input = {
+            "institution_name": product.institution_name,
+            "product_name": product.product_name,
+            "category": ProductCategory.SAVINGS,
+            "disclosed_month": product.disclosed_month,
+            "source_hash": _compute_source_hash(product, options),
+            "join_way": product.join_way,
+            "max_limit_won": product.max_limit_won,
+            "join_member": product.join_member,
+            "spcl_cnd": product.spcl_cnd,
+            "known_rate_options": known_rate_options,
+            "compounding_by_term": compounding_by_term,
+            "reserve_type": ReserveType(reserve_type),
+        }
+        print(f"[{product.institution_name} / {product.product_name} ({reserve_type})]", flush=True)
+        result = extraction_graph.invoke(state_input)
+        retry_count = result.get("retry_count", 0)
+        reviewer_unavailable = bool(result.get("reviewer_unavailable"))
+        notes = result.get("consistency_notes") or []
+        extractor_failed |= any(v.error for v in result.get("verdicts", []))
+
+        def term_notes(term: int) -> list[str]:
+            return [note for note in notes if note.startswith(f"{term}개월:") or note.startswith("가입자격:")]
+
+        for term in result["accepted_terms"]:
+            stats["terms"] += 1
+            stats["accepted"] += 1
+            stats["reviewer_skipped"] += int(reviewer_unavailable)
+            log_extraction_result(conn, product.institution_name, product.product_name, term, "accepted", None,
+                                  retry_count, reviewer_unavailable, term_notes(term))
+        for term, reason in result["excluded_terms"].items():
+            stats["terms"] += 1
+            log_extraction_result(conn, product.institution_name, product.product_name, term, "excluded", reason,
+                                  retry_count, reviewer_unavailable, term_notes(term))
+            stats["excluded_reasons"][reason.split(";")[0].split("(")[0].strip()] += 1
+
+        if result["product"] is not None:
+            accepted_sub_products.append(result["product"])
+        print(
+            f"    accepted={result['accepted_terms']} excluded={list(result['excluded_terms'])} "
+            f"retry={retry_count}{' reviewer=없음' if reviewer_unavailable else ''}",
+            flush=True,
+        )
+
+    source_hash = _compute_source_hash(product, product.options)
+    # 적립방식별로 따로 나온 product들을 rate_options 기준으로 한 상품에 합쳐서
+    # 한 번만 저장한다 (따로 저장하면 나중 저장이 먼저 저장을 덮어쓴다).
+    if accepted_sub_products:
+        merged_rate_options = [ro for sp in accepted_sub_products for ro in sp.rate_options]
+        merged_product = accepted_sub_products[0].model_copy(
+            update={"rate_options": merged_rate_options, "eligibility": accepted_sub_products[0].eligibility,
+                    "source_hash": source_hash}
+        )
+        save_product(conn, merged_product)
+    else:
+        deactivate_product(conn, product.institution_name, product.product_name)
+    if not extractor_failed:
+        record_source_check(conn, product.institution_name, product.product_name, product.disclosed_month,
+                            source_hash, "accepted" if accepted_sub_products else "excluded")
+    return stats
 
 
 if __name__ == "__main__":

@@ -120,6 +120,7 @@ class AskResponse(BaseModel):
     used_fallback: bool = False
     retry_count: int = 0
     verification_errors: list[str] = Field(default_factory=list)
+    input_warnings: list[str] = Field(default_factory=list)
     disclaimer: str = (
         "예상 금리와 이자는 입력한 조건 및 금융감독원 공시 정보를 기준으로 계산한 "
         "근사치입니다. 실제 적용 여부와 금리는 가입 시 금융회사에서 확인하세요."
