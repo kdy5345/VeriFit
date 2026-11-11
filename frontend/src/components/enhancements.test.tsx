@@ -3,8 +3,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../App";
 import { ScenarioComparison } from "./ScenarioComparison";
-import { ProductCard } from "./ProductCard";
-import { EvidenceDrawer } from "./EvidenceDrawer";
+import { ProductSheet } from "./ProductSheet";
 import { askAgent, compareScenarios, restoreConversation } from "../lib/api";
 import type { AskResponse, ProductResult, ScenarioResponse } from "../types/agent";
 
@@ -66,13 +65,23 @@ describe("VeriFit 사용자 흐름", () => {
     expect(await screen.findByText(/대화 복원 실패/)).toBeTruthy();
   });
 
-  it("미확인을 미충족과 구분하고 근거에 같은 판정을 보여준다", () => {
-    render(<ProductCard product={product} rank={1} onOpenEvidence={() => {}} />);
+  it("미확인을 미충족과 구분하고 근거와 원문 버전을 보여준다", () => {
+    render(<ProductSheet product={product} onClose={() => {}} />);
     expect(screen.getByText("미확인")).toBeTruthy();
-    cleanup();
-    render(<EvidenceDrawer product={product} onClose={() => {}} />);
     expect(screen.getByText(/판정에 필요한 정보가 부족/)).toBeTruthy();
     expect(screen.getByText(/원문 버전: hash/)).toBeTruthy();
+  });
+
+  it("상품 줄을 누르면 근거 시트가 열린다", async () => {
+    vi.mocked(askAgent).mockResolvedValue(response);
+    render(<App />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("적금 조건 입력"), "월 30만 원 1년");
+    await user.click(screen.getByRole("button", {name: "내 조건 분석하기"}));
+    await user.click(await screen.findByRole("button", {name: "테스트은행 검증적금 자세히 보기"}));
+    expect(screen.getByRole("dialog", {name: "검증적금 계산 근거"})).toBeTruthy();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("가정 비교는 프로필을 복사하고 원래 조건을 변경하지 않는다", async () => {

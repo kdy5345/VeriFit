@@ -1,7 +1,6 @@
 """온라인 Agent 노드. LLM은 해석·설명, 코드는 금융 판정과 검증을 담당한다."""
 
 import re
-from decimal import Decimal
 
 from app.agent.state import OnlineAgentState
 from app.core.config import settings
@@ -14,6 +13,7 @@ from app.services.interest import calculate_savings_interest
 from app.services.matching import find_matches, bonus_status
 from app.schemas.user import ConditionStatus
 from app.services.evaluation import evaluate_products, product_key, result_for_match
+from app.services.korean_numbers import find_percent_bps, find_won_amounts, parse_months, parse_won
 from app.services.online_agent_llm import GeminiOnlineAgent, OnlineAgentLlmError
 
 
@@ -54,29 +54,17 @@ def _quote_is_grounded(message: str, quote: str | None) -> bool:
     return bool(quote) and _compact(quote) in _compact(message)
 
 
-def _money_from_quote(quote: str) -> int | None:
-    text = _compact(quote).replace(",", "")
-    match = re.search(r"(\d+(?:\.\d+)?)(만원|천원|원)", text)
-    if not match:
-        return None
-    multiplier = {"만원": 10_000, "천원": 1_000, "원": 1}[match.group(2)]
-    return int(Decimal(match.group(1)) * multiplier)
-
-
-def _months_from_quote(quote: str) -> int | None:
-    text = _compact(quote)
-    year = re.search(r"(\d+)년", text)
-    month = re.search(r"(\d+)개월", text)
-    if year and month:
-        return int(year.group(1)) * 12 + int(month.group(1))
-    if year:
-        return int(year.group(1)) * 12
-    if month:
-        return int(month.group(1))
-    return None
+_DEPOSIT_RETRY_QUESTION = "매월 넣을 금액을 숫자와 단위로 다시 알려주세요. 예: 월 30만 원"
+_TERM_RETRY_QUESTION = "가입 기간을 개월이나 년으로 다시 알려주세요. 예: 12개월, 1년"
 
 
 def validate_input(state: OnlineAgentState) -> dict:
+    """Analyzer 출력을 사용자 원문과 대조한다.
+
+    - 금액·기간: 원문 인용과 숫자가 맞아야 계산에 쓴다. 맞지 않으면 실패시키지 않고 다시 묻는다.
+    - 조건(fact): 원문 근거가 없으면 그 조건만 버리고(미확인), 세부 수치가 원문과 다르면
+      그 수치만 비운다. 버리거나 비우면 우대를 덜 주는 방향이라 금리를 부풀리지 않는다.
+    """
     analysis = state.get("analysis")
     if analysis is None:
         return {
@@ -86,45 +74,52 @@ def validate_input(state: OnlineAgentState) -> dict:
         }
 
     conversation = _conversation_text(state)
-    errors: list[str] = []
     questions: list[str] = []
+    warnings: list[str] = []
     if analysis.monthly_deposit_won is None:
         questions.append("매월 얼마를 납입할 예정인가요?")
-    elif not _quote_is_grounded(conversation, analysis.monthly_deposit_quote):
-        errors.append("월 납입액의 원문 근거를 확인할 수 없습니다.")
-    elif _money_from_quote(analysis.monthly_deposit_quote or "") != analysis.monthly_deposit_won:
-        errors.append("월 납입액이 사용자 원문의 숫자와 일치하지 않습니다.")
+    elif not _quote_is_grounded(conversation, analysis.monthly_deposit_quote) or parse_won(analysis.monthly_deposit_quote or "") != analysis.monthly_deposit_won:
+        questions.append(_DEPOSIT_RETRY_QUESTION)
+        warnings.append("월 납입액이 사용자 원문의 숫자와 맞지 않아 다시 묻습니다.")
 
     if analysis.term_months is None:
         questions.append("몇 개월 동안 가입할 예정인가요?")
-    elif not _quote_is_grounded(conversation, analysis.term_quote):
-        errors.append("가입 기간의 원문 근거를 확인할 수 없습니다.")
-    elif _months_from_quote(analysis.term_quote or "") != analysis.term_months:
-        errors.append("가입 기간이 사용자 원문의 숫자와 일치하지 않습니다.")
+    elif not _quote_is_grounded(conversation, analysis.term_quote) or parse_months(analysis.term_quote or "") != analysis.term_months:
+        questions.append(_TERM_RETRY_QUESTION)
+        warnings.append("가입 기간이 사용자 원문의 숫자와 맞지 않아 다시 묻습니다.")
 
     seen_codes = set()
+    facts = []
     for fact in analysis.facts:
+        code = fact.code.value
         if fact.code in seen_codes:
-            errors.append(f"사용자 조건 {fact.code.value}가 중복 추출됐습니다.")
+            warnings.append(f"사용자 조건 {code}가 중복 추출돼 첫 번째만 사용합니다.")
+            continue
         seen_codes.add(fact.code)
         if not _quote_is_grounded(conversation, fact.evidence_quote):
-            errors.append(f"사용자 조건 {fact.code.value}의 원문 근거를 확인할 수 없습니다.")
+            warnings.append(f"사용자 조건 {code}의 원문 근거가 없어 미확인으로 둡니다.")
+            continue
         # 세부 실적을 임의로 채워 우대를 받게 만들지 않도록 수치도 대조한다.
-        if fact.amount_won is not None and _money_from_quote(fact.evidence_quote) != fact.amount_won:
-            errors.append(f"{fact.code.value}의 실적 금액이 원문과 다릅니다.")
-        if fact.months is not None and _months_from_quote(fact.evidence_quote) != fact.months:
-            errors.append(f"{fact.code.value}의 실적 기간이 원문과 다릅니다.")
-        if fact.count is not None and not re.search(rf"(?<!\d){fact.count}\s*(회|건)", fact.evidence_quote):
-            errors.append(f"{fact.code.value}의 실적 횟수가 원문과 다릅니다.")
+        update = {}
+        if fact.amount_won is not None and parse_won(fact.evidence_quote) != fact.amount_won:
+            update["amount_won"] = None
+        if fact.months is not None and parse_months(fact.evidence_quote) != fact.months:
+            update["months"] = None
+        if fact.count is not None and not re.search(rf"(?<!\d){fact.count}\s*(회|건|번)", fact.evidence_quote):
+            update["count"] = None
         if fact.age is not None and not re.search(rf"(?<!\d){fact.age}\s*(세|살)", fact.evidence_quote):
-            errors.append("나이의 원문 근거를 확인할 수 없습니다.")
+            update["age"] = None
+        if update:
+            warnings.append(f"사용자 조건 {code}의 {', '.join(update)} 값이 원문과 달라 비웠습니다.")
+        facts.append(fact.model_copy(update=update))
 
-    if errors or questions:
-        return {"profile": None, "questions": questions, "errors": errors}
+    if questions:
+        return {"profile": None, "questions": questions, "errors": [], "input_warnings": warnings}
     try:
-        return {"profile": analysis.to_user_profile(), "questions": [], "errors": []}
+        profile = analysis.model_copy(update={"facts": facts}).to_user_profile()
+        return {"profile": profile, "questions": [], "errors": [], "input_warnings": warnings}
     except ValueError as exc:
-        return {"profile": None, "questions": [], "errors": [str(exc)]}
+        return {"profile": None, "questions": [], "errors": [str(exc)], "input_warnings": warnings}
 
 
 def route_after_validation(state: OnlineAgentState) -> str:
@@ -249,7 +244,42 @@ def verify_answer(state: OnlineAgentState) -> dict:
         errors.append("계산상 최상위 상품이 답변에서 누락됐습니다.")
     if any(p.eligibility_warning for p in state["product_results"] if p.product_key in seen) and "확인" not in draft.answer:
         errors.append("가입 자격이 미확인인 상품에 확인 필요 안내가 없습니다.")
+    errors.extend(_answer_text_errors(draft.answer, [by_key[key] for key in seen if key in by_key], state["product_results"], state.get("profile")))
     return {"errors": errors}
+
+
+_TAX_RATE_BPS = 1540  # 일반과세 15.4%. 계산 엔진이 쓰는 고정값이라 문장에 나와도 된다.
+
+
+def _answer_text_errors(answer: str, claimed: list[AgentProductResult], all_products: list[AgentProductResult], profile) -> list[str]:
+    """사용자가 실제로 읽는 answer 문장의 숫자와 상품명도 계산값과 대조한다.
+
+    product_claims만 맞추고 문장에는 공시 최고금리를 적용금리처럼 쓰는 경우를 막는다.
+    문장 속 금리(%)와 금액(원)은 주장한 상품의 계산값이나 사용자가 말한 금액 중 하나여야 한다.
+    """
+    errors: list[str] = []
+    allowed_bps = {_TAX_RATE_BPS}
+    allowed_won: set[int] = set()
+    for p in claimed:
+        allowed_bps |= {p.base_rate_bps, p.achieved_rate_bps, p.max_rate_bps, p.potential_rate_bps}
+        allowed_bps |= {b.rate_bps for b in p.bonuses}
+        allowed_won |= {p.after_tax_interest_won, p.maturity_amount_won, p.potential_after_tax_interest_won}
+    if profile is not None:
+        allowed_won.add(profile.monthly_deposit_won)
+        allowed_won |= {f.amount_won for f in profile.facts.values() if f.amount_won is not None}
+
+    unknown_rates = sorted({f"{bps / 100:.2f}%" if bps is not None else "소수 셋째 자리 금리" for bps in find_percent_bps(answer) if bps not in allowed_bps})
+    if unknown_rates:
+        errors.append(f"답변 문장에 계산 결과에 없는 금리가 있습니다: {', '.join(unknown_rates)}. supplied_products의 값만 쓰세요.")
+    unknown_won = sorted({won for won in find_won_amounts(answer) if won not in allowed_won})
+    if unknown_won:
+        errors.append(f"답변 문장에 계산 결과에 없는 금액이 있습니다: {', '.join(f'{w:,}원' for w in unknown_won)}. 직접 계산하거나 반올림한 금액은 쓰지 마세요.")
+
+    claimed_names = {p.product_name for p in claimed}
+    unclaimed = sorted({p.product_name for p in all_products if p.product_name not in claimed_names and p.product_name in answer})
+    if unclaimed:
+        errors.append(f"답변 문장에서 언급한 상품이 product_claims에 없습니다: {', '.join(unclaimed)}")
+    return errors
 
 
 def route_after_verification(state: OnlineAgentState) -> str:
@@ -279,9 +309,11 @@ def review_answer(state: OnlineAgentState) -> dict:
 
 def route_after_review(state: OnlineAgentState) -> str:
     review = state.get("review")
-    if review is not None and review.approved and not review.findings:
+    if review is None:
+        # Reviewer를 쓸 수 없으면 검토 없는 LLM 문장을 내보내지 않고 바로 정형 답변으로 간다.
+        return "fallback"
+    if review.approved and not review.findings:
         return "finalize"
-    findings = review.findings if review else state.get("errors", [])
     if state.get("retry_count", 0) < 1:
         return "retry"
     return "fallback"
@@ -324,6 +356,7 @@ def finalize(state: OnlineAgentState) -> dict:
         next_question=state.get("next_question"),
         excluded_products=state.get("excluded_products", []),
         retry_count=state.get("retry_count", 0),
+        input_warnings=state.get("input_warnings", []),
     )
     return {"response": response}
 
@@ -342,6 +375,7 @@ def fallback(state: OnlineAgentState) -> dict:
         used_fallback=True,
         retry_count=state.get("retry_count", 0),
         verification_errors=state.get("errors", []),
+        input_warnings=state.get("input_warnings", []),
     )
     return {"response": response}
 
@@ -354,6 +388,7 @@ def needs_input(state: OnlineAgentState) -> dict:
             status="needs_input",
             answer=" ".join(questions),
             questions=questions,
+            input_warnings=state.get("input_warnings", []),
         )
     }
 

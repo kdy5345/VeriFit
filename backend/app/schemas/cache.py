@@ -20,6 +20,7 @@ class CachedTurn(CalculatedTurn):
     draft: DraftAnswer | None = None
     review: AnswerReview | None = None
     questions: list[str] = Field(default_factory=list)
+    input_warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     retry_count: int = 0
     llm_error: str | None = None

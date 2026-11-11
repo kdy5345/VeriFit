@@ -93,7 +93,21 @@ CREATE TABLE IF NOT EXISTS extraction_log (
     status TEXT NOT NULL,  -- 'accepted' | 'excluded'
     reason TEXT,
     retry_count INTEGER NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    reviewer_unavailable INTEGER NOT NULL DEFAULT 0,  -- Reviewer 없이 코드 검증만 통과한 경우 1
+    consistency_notes TEXT  -- 3회 추출 불일치로 강등·보수 처리한 기록 (JSON 배열)
+);
+
+-- 배치가 마지막으로 끝까지 검증한 원문. 전부 제외된 상품도 원문이 그대로면 다시
+-- 추출하지 않게 한다 (Extractor 장애로 끝난 상품은 기록하지 않아 다음 실행에서 재시도).
+CREATE TABLE IF NOT EXISTS source_checks (
+    institution_name TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    disclosed_month TEXT NOT NULL,
+    source_hash TEXT NOT NULL,
+    outcome TEXT NOT NULL,  -- 'accepted' | 'excluded'
+    checked_at TEXT NOT NULL,
+    PRIMARY KEY (institution_name, product_name)
 );
 """
 

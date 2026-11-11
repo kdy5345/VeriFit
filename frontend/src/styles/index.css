@@ -64,6 +64,9 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes loading-slide { from { transform: translateX(-100%); } to { transform: translateX(400%); } }
 .animate-fade-up { animation: fade-up .22s ease; }
+@keyframes sheet-up { from { opacity: .4; transform: translateY(32px); } }
+@keyframes dot { 0%, 80%, 100% { opacity: .25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-4px); } }
+.animate-sheet-up { animation: sheet-up .26s cubic-bezier(.2,.8,.2,1); }
 .animate-spin-fast { animation: spin .8s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {

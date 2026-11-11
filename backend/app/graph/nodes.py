@@ -44,7 +44,8 @@ def get_reviewer() -> GeminiReviewer:
 
 
 def _has_problem(verdict: RateOptionVerdict) -> bool:
-    return bool(verdict.error) or (not verdict.reachability.reachable) or bool(verdict.dropped_bonus_ids)
+    return (bool(verdict.error) or (not verdict.reachability.reachable) or bool(verdict.dropped_bonus_ids)
+            or bool(verdict.rate_mismatch_bonus_ids))
 
 
 def extract(state: ExtractionState) -> dict:
@@ -63,8 +64,9 @@ def extract(state: ExtractionState) -> dict:
         # state에 남기고 verify 노드가 합성 verdict로 처리하게 한다.
         return {"extraction": None, "extract_error": str(exc), "review_findings": []}
 
-    merged, _consistency_report = merge_self_consistency(runs)
-    return {"extraction": merged, "extract_error": None, "review_findings": []}
+    merged, report = merge_self_consistency(runs)
+    # 재시도에서 다시 추출하면 마지막 시도의 불일치 기록으로 바뀐다 (최종 저장된 추출 기준).
+    return {"extraction": merged, "extract_error": None, "review_findings": [], "consistency_notes": report.notes()}
 
 
 def verify(state: ExtractionState) -> dict:
@@ -158,6 +160,11 @@ def prepare_retry(state: ExtractionState) -> dict:
                 "원문에서 그대로 발견되지 않았습니다. 원문 문자열을 한 글자도 바꾸지 말고 "
                 "다시 인용하세요."
             )
+        if v.rate_mismatch_bonus_ids:
+            errors.append(
+                f"{v.term_months}개월: 항목 {list(v.rate_mismatch_bonus_ids)}의 rate_bps가 "
+                "evidence_quote 안의 금리 숫자와 다릅니다. 인용문의 %p 숫자 × 100으로 다시 넣으세요."
+            )
         if not v.reachability.reachable:
             if v.reachability.overshoot:
                 errors.append(
@@ -203,6 +210,8 @@ def finalize(state: ExtractionState) -> dict:
             reasons.append(f"Extractor 오류: {v.error}")
         if v.dropped_bonus_ids:
             reasons.append(f"근거 인용 실패: {list(v.dropped_bonus_ids)}")
+        if v.rate_mismatch_bonus_ids:
+            reasons.append(f"우대 금리와 원문 숫자 불일치: {list(v.rate_mismatch_bonus_ids)}")
         if not v.reachability.reachable:
             if v.reachability.overshoot:
                 reasons.append(

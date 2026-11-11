@@ -30,6 +30,7 @@ class OnlineAgentState(TypedDict, total=False):
     review: AnswerReview | None
 
     questions: list[str]
+    input_warnings: list[str]  # 버리거나 비운 입력과 그 이유. 응답에 그대로 남긴다.
     errors: list[str]
     retry_count: int
     llm_error: str | None

@@ -29,7 +29,8 @@ class ExtractionState(TypedDict, total=False):
     verdicts: list[RateOptionVerdict]
     verified_eligibility: list[LlmEligibility]  # join_member에 근거가 실제로 있는 것만
     review_findings: list[ReviewFinding]  # 근거 대조까지 통과한, 실제로 반영되는 지적만
-    reviewer_unavailable: bool  # Reviewer 호출이 실패해 검토를 건너뛴 경우 True
+    reviewer_unavailable: bool  # Reviewer 호출이 실패해 검토를 건너뛴 경우 True (extraction_log에 저장)
+    consistency_notes: list[str]  # 3회 추출 간 불일치로 강등·보수 처리한 항목 ("12개월:..." 형식)
     retry_count: int
     errors: list[str]  # 검증 실패 사유. 다음 extract 호출의 피드백으로 들어간다.
 

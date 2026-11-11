@@ -47,7 +47,7 @@ def _invoke(request: AskRequest, conn: sqlite3.Connection, thread_id: str) -> As
             "products": products,
             "retry_count": 0,
             "analysis": None, "profile": None, "product_results": [],
-            "draft": None, "review": None, "questions": [], "errors": [],
+            "draft": None, "review": None, "questions": [], "errors": [], "input_warnings": [],
             "next_question": None, "excluded_products": [], "llm_error": None,
         }
     computed = False

@@ -1,13 +1,16 @@
 """LLM 추출 결과를 코드로 검증하고, 통과한 것만 Knowledge Graph 스키마로 변환한다.
 
-여기서 하는 검증은 "숫자·형식"뿐이다 (의미가 맞는지는 Reviewer LLM의 몫, 아직
-미구현). 이 단계만으로 걸러지는 것:
+여기서 하는 검증은 "숫자·형식"뿐이다 (의미가 맞는지는 Reviewer LLM의 몫).
+이 단계만으로 걸러지는 것:
   - evidence_quote가 원문에 실제로 있는지 (없으면 그 항목 자체를 폐기)
-  - rate_bps가 0인데 codes에 other가 없는 이상한 조합
+  - rate_bps가 evidence_quote 안의 금리 숫자와 맞는지 (인용문에 % 숫자가 있는데 하나도
+    맞지 않으면 그 항목을 폐기)
   - RateOption마다 도달가능성 검사 통과 여부
 """
 
+import re
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app.schemas.extraction import LlmEligibility, LlmExtraction
 from app.schemas.graph import (
@@ -31,6 +34,16 @@ class RateOptionVerdict:
     reachability: ReachabilityResult
     dropped_bonus_ids: tuple[str, ...]  # 근거 대조 실패로 폐기된 항목
     error: str | None = None  # Extractor 호출 자체가 실패한 경우의 메시지 (합성 verdict용)
+    rate_mismatch_bonus_ids: tuple[str, ...] = ()  # rate_bps가 인용문 금리 숫자와 달라 폐기된 항목
+
+
+def rate_matches_quote(rate_bps: int, quote: str) -> bool:
+    """인용문에 '연 0.5%p' 같은 금리 숫자가 있으면 rate_bps가 그중 하나와 같아야 한다.
+    숫자가 없는 인용문(구간표가 따로 있는 경우)이나 rate_bps=0(폭 미상)은 판정하지 않는다."""
+    numbers = re.findall(r"(\d+(?:\.\d+)?)\s*%", quote)
+    if not numbers or rate_bps == 0:
+        return True
+    return any(Decimal(n) * 100 == rate_bps for n in numbers)
 
 
 def synthetic_extractor_failure_verdict(
@@ -99,10 +112,14 @@ def build_and_verify(
         llm_option = llm_by_term.get(term)
         bonuses: list[Bonus] = []
         dropped: list[str] = []
+        rate_mismatch: list[str] = []
 
         for llm_bonus in (llm_option.bonuses if llm_option else []):
             if not _quote_exists(llm_bonus.evidence_quote, spcl_cnd):
                 dropped.append(llm_bonus.id)
+                continue
+            if not rate_matches_quote(llm_bonus.rate_bps, llm_bonus.evidence_quote):
+                rate_mismatch.append(llm_bonus.id)
                 continue
             bonuses.append(
                 Bonus(
@@ -160,6 +177,7 @@ def build_and_verify(
                 option=option,
                 reachability=check_reachability(option),
                 dropped_bonus_ids=tuple(dropped),
+                rate_mismatch_bonus_ids=tuple(rate_mismatch),
             )
         )
     return verdicts

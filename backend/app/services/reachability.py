@@ -11,6 +11,12 @@
 알려주는 사고). 이런 경우는 그룹 한도나 중복 불가 조건이 빠진 것이므로, "최대 도달
 가능 합"이 gap을 넘는 것 자체를 별도 실패(overshoot)로 잡아 재시도/제외 대상으로
 삼는다.
+
+OTHER 항목(조건을 표준 코드로 분류하지 못한 우대)도 원문에 금리 폭이 명시돼 있으면
+합계 계산에 넣는다. 그 폭까지 합쳐 공시 최고금리를 정확히 설명하면 추출한 숫자 구조는
+검증된 것이다. OTHER 우대는 조건을 판정할 수 없으므로 사용자 금리(matching.py)에는
+여전히 넣지 않는다. "재직기간에 따라 최고 1.2%p"처럼 폭을 알 수 없는 항목은 Extractor가
+rate_bps=0으로 남기므로 계속 설명하지 못한 것으로 처리돼 제외된다.
 """
 
 from dataclasses import dataclass
@@ -36,7 +42,8 @@ def check_reachability(option: RateOption) -> ReachabilityResult:
         reachable = gap_bps == 0
         return ReachabilityResult(reachable, gap_bps, 0, gap_bps < 0, () if reachable else None, ())
 
-    usable = [b for b in group.bonuses if not b.has_unsupported_requirement]
+    usable = list(group.bonuses)
+    # 사용자 금리 계산에서 빠지는 OTHER 항목 (설명·로그용)
     excluded_other = tuple(b.id for b in group.bonuses if b.has_unsupported_requirement)
     exclusive = {frozenset(pair) for pair in group.exclusive_pairs}
 

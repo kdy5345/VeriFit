@@ -39,8 +39,9 @@ def _run(live=False, limit=None):
             actual = get_online_agent().analyze(case["message"]) if live else expected
             validated = validate_input({"message": case["message"], "analysis": actual})
             errors = validated["errors"]
-            passed = semantic(actual) == semantic(expected) and not errors
-            results.append({"id": case["id"], "passed": passed, "validation_errors": errors,
+            warnings = validated.get("input_warnings", [])
+            passed = semantic(actual) == semantic(expected) and not errors and not warnings
+            results.append({"id": case["id"], "passed": passed, "validation_errors": errors, "input_warnings": warnings,
                             "expected": semantic(expected), "actual": semantic(actual)})
         except Exception as exc:
             results.append({"id": case["id"], "passed": False, "error": str(exc)})
